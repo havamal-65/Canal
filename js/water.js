@@ -15,7 +15,8 @@
     const ground = w.ground, water = w.water, struct = w.struct;
     for (const s of w.sources) {
       const i = w.idx(s.x, s.y);
-      water[i] = Math.max(0, C.SOURCE_LEVEL - ground[i]); // fixed-head spring
+      const lvl = s.level || C.SOURCE_LEVEL;
+      water[i] = Math.max(0, lvl - ground[i]); // fixed-head spring (supplies and caps)
     }
     for (let i = 0; i < ground.length; i++) {
       if (ground[i] < C.SEA_LEVEL) water[i] = C.SEA_LEVEL - ground[i]; // sea boundary (sink+source)

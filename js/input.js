@@ -258,7 +258,7 @@
       if (dock === this.routePick) { Canal.toast('Pick a different destination dock.', 'bad'); return; }
       const eco = this.game.economy;
       if (!eco.spend(C.COST_BOAT)) { this.warnMoney(); this.routePick = null; return; }
-      this.game.boatMgr.addRoute(this.routePick, dock);
+      this.game.boatMgr.addRoute([this.routePick, dock]);
       Canal.toast('Route opened: Dock ' + this.routePick.id + ' → Dock ' + dock.id + '. Boat purchased.', 'good');
       this.routePick = null;
       this.game.updateHud();

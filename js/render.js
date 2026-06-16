@@ -183,11 +183,15 @@
 
     drawRoutes(ctx, boatMgr) {
       ctx.save(); ctx.setLineDash([4, 4]); ctx.lineWidth = 1.5;
+      ctx.strokeStyle = 'rgba(46,196,182,0.35)';
       for (const r of boatMgr.routes) {
-        ctx.strokeStyle = 'rgba(46,196,182,0.35)';
+        const s = r.stops;
         ctx.beginPath();
-        ctx.moveTo(r.a.x * T + T / 2, r.a.y * T + T / 2);
-        ctx.lineTo(r.b.x * T + T / 2, r.b.y * T + T / 2);
+        for (let k = 0; k < s.length; k++) {
+          const x = s[k].x * T + T / 2, y = s[k].y * T + T / 2;
+          if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        if (s.length > 2) ctx.lineTo(s[0].x * T + T / 2, s[0].y * T + T / 2); // close the loop
         ctx.stroke();
       }
       ctx.restore();

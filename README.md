@@ -21,9 +21,16 @@ python3 -m http.server 8000
 
 ## How to play
 
-You start with a procedurally generated landscape that slopes from a highland
-(top‑left) down to the sea (bottom‑right). A natural **spring** at the top of
-the map feeds the river. Your job is to move cargo by water and get paid for it.
+The game **boots into a demo loop** so you can immediately watch the systems
+work: a **high lake** and a **low lake** joined by two single‑lane lock channels.
+Three boats run the circuit continuously — up through the left lock into the top
+lake, across, down through the right lock into the bottom lake, and round again —
+so you can see the lock chambers fill and empty as each boat passes. You can
+keep building your own canals on top of it with the tools.
+
+The underlying sandbox is a procedurally generated landscape that slopes from a
+highland down to the sea, fed by a **spring**. Your job is to move cargo by water
+and get paid for it.
 
 The loop:
 
