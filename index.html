@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Canal — Canal Tycoon</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+<div id="app">
+  <header id="hud">
+    <div class="hud-brand">
+      <span class="logo">⚓ CANAL</span>
+      <span class="tagline">Build canals. Move boats. Make a fortune.</span>
+    </div>
+    <div class="hud-stats">
+      <div class="stat" title="Cash on hand">
+        <span class="stat-label">Cash</span>
+        <span class="stat-value" id="stat-money">£0</span>
+      </div>
+      <div class="stat" title="Income from deliveries (last 10s, per minute)">
+        <span class="stat-label">Income</span>
+        <span class="stat-value" id="stat-income">£0/min</span>
+      </div>
+      <div class="stat" title="Cargo delivered">
+        <span class="stat-label">Delivered</span>
+        <span class="stat-value" id="stat-delivered">0</span>
+      </div>
+      <div class="stat" title="Active boats">
+        <span class="stat-label">Boats</span>
+        <span class="stat-value" id="stat-boats">0</span>
+      </div>
+    </div>
+    <div class="hud-time">
+      <button class="speed-btn" data-speed="0" title="Pause">⏸</button>
+      <button class="speed-btn active" data-speed="1" title="Normal speed">▶</button>
+      <button class="speed-btn" data-speed="2" title="Fast">▶▶</button>
+      <button class="speed-btn" data-speed="4" title="Very fast">▶▶▶</button>
+    </div>
+  </header>
+
+  <div id="main">
+    <aside id="toolbar">
+      <div class="tool-group">
+        <h3>Terrain</h3>
+        <button class="tool" data-tool="dig" data-key="1">
+          <span class="tool-icon">⛏️</span>
+          <span class="tool-name">Dig</span>
+          <span class="tool-cost" id="cost-dig"></span>
+        </button>
+        <button class="tool" data-tool="fill" data-key="2">
+          <span class="tool-icon">🏔️</span>
+          <span class="tool-name">Fill</span>
+          <span class="tool-cost" id="cost-fill"></span>
+        </button>
+      </div>
+      <div class="tool-group">
+        <h3>Build</h3>
+        <button class="tool" data-tool="lock" data-key="3">
+          <span class="tool-icon">🚪</span>
+          <span class="tool-name">Lock</span>
+          <span class="tool-cost" id="cost-lock"></span>
+        </button>
+        <button class="tool" data-tool="dock" data-key="4">
+          <span class="tool-icon">⚓</span>
+          <span class="tool-name">Dock</span>
+          <span class="tool-cost" id="cost-dock"></span>
+        </button>
+        <button class="tool" data-tool="source" data-key="5">
+          <span class="tool-icon">💧</span>
+          <span class="tool-name">Water Source</span>
+          <span class="tool-cost" id="cost-source"></span>
+        </button>
+      </div>
+      <div class="tool-group">
+        <h3>Logistics</h3>
+        <button class="tool" data-tool="route" data-key="6">
+          <span class="tool-icon">🛟</span>
+          <span class="tool-name">Route + Boat</span>
+          <span class="tool-cost" id="cost-route"></span>
+        </button>
+      </div>
+      <div class="tool-group">
+        <h3>Edit</h3>
+        <button class="tool" data-tool="bulldoze" data-key="7">
+          <span class="tool-icon">🧹</span>
+          <span class="tool-name">Bulldoze</span>
+          <span class="tool-cost"></span>
+        </button>
+        <button class="tool active" data-tool="inspect" data-key="8">
+          <span class="tool-icon">🔍</span>
+          <span class="tool-name">Inspect</span>
+          <span class="tool-cost"></span>
+        </button>
+      </div>
+      <div class="tool-group brush-group">
+        <h3>Brush size</h3>
+        <div class="brush-row">
+          <button class="brush" data-brush="0">1</button>
+          <button class="brush active" data-brush="1">2</button>
+          <button class="brush" data-brush="2">3</button>
+        </div>
+      </div>
+    </aside>
+
+    <div id="stage">
+      <canvas id="game"></canvas>
+      <div id="hint" class="hint"></div>
+    </div>
+
+    <aside id="inspector">
+      <h3>Inspector</h3>
+      <div id="inspector-body">
+        <p class="muted">Hover or click a tile to inspect it.</p>
+      </div>
+      <div class="legend">
+        <h3>Legend</h3>
+        <div class="legend-row"><span class="sw water"></span> Navigable water</div>
+        <div class="legend-row"><span class="sw shallow"></span> Too shallow</div>
+        <div class="legend-row"><span class="sw lock"></span> Lock (boat lift)</div>
+        <div class="legend-row"><span class="sw dock"></span> Dock</div>
+        <div class="legend-row"><span class="sw source"></span> Water source</div>
+      </div>
+    </aside>
+  </div>
+
+  <div id="toast"></div>
+</div>
+
+<script src="js/config.js"></script>
+<script src="js/rng.js"></script>
+<script src="js/terrain.js"></script>
+<script src="js/water.js"></script>
+<script src="js/pathfind.js"></script>
+<script src="js/boats.js"></script>
+<script src="js/economy.js"></script>
+<script src="js/render.js"></script>
+<script src="js/input.js"></script>
+<script src="js/game.js"></script>
+</body>
+</html>

@@ -1,0 +1,108 @@
+// Main game: wires the systems together, runs a fixed-timestep simulation with
+// a requestAnimationFrame render loop, and drives the HUD.
+(function (Canal) {
+  const C = Canal.CONFIG;
+
+  // --- toast notifications ---
+  let toastTimer = null;
+  Canal.toast = function (msg, kind) {
+    const host = document.getElementById('toast');
+    if (!host) return;
+    const div = document.createElement('div');
+    div.className = 'toast-msg ' + (kind || 'info');
+    div.textContent = msg;
+    host.appendChild(div);
+    setTimeout(() => {
+      div.style.transition = 'opacity .4s';
+      div.style.opacity = '0';
+      setTimeout(() => div.remove(), 400);
+    }, 2600);
+  };
+
+  class Game {
+    constructor() {
+      this.world = new Canal.World((Math.random() * 1e9) | 0);
+      this.economy = new Canal.Economy();
+      this.boatMgr = new Canal.BoatManager(this.world, this.economy);
+      this.renderer = new Canal.Renderer(document.getElementById('game'), this.world);
+      this.input = new Canal.Input(this);
+
+      this.speed = 1;
+      this.prevSpeed = 1;
+      this.stepDt = 1 / C.SIM_HZ;
+      this.acc = 0;
+      this.last = performance.now();
+      this.hudTimer = 0;
+
+      this.input.selectTool('inspect');
+      this.updateHud();
+      this.welcome();
+      requestAnimationFrame((t) => this.frame(t));
+    }
+
+    welcome() {
+      Canal.toast('Welcome to Canal. A spring feeds the river at the top of the map.', 'good');
+      setTimeout(() => Canal.toast('Dig a channel from the water, build docks, then link them with a Route.', 'info'), 2800);
+      setTimeout(() => Canal.toast('Use Locks to raise boats between canal stretches at different heights.', 'info'), 5600);
+      this.setHint(this.input.hintFor('inspect'));
+    }
+
+    setSpeed(s) {
+      this.speed = s;
+      if (s > 0) this.prevSpeed = s;
+    }
+
+    togglePause() {
+      const next = this.speed > 0 ? 0 : this.prevSpeed;
+      this.setSpeed(next);
+      document.querySelectorAll('.speed-btn').forEach((b) => {
+        b.classList.toggle('active', parseInt(b.dataset.speed, 10) === next);
+      });
+    }
+
+    setHint(text) {
+      const el = document.getElementById('hint');
+      if (el) el.textContent = text;
+    }
+
+    frame(now) {
+      let dt = (now - this.last) / 1000;
+      this.last = now;
+      if (dt > 0.1) dt = 0.1; // avoid huge catch-up after a tab switch
+
+      // Building works even while paused.
+      this.input.tickPaint(dt);
+
+      if (this.speed > 0) {
+        this.acc += dt * this.speed;
+        let steps = 0;
+        while (this.acc >= this.stepDt && steps < 8) {
+          this.acc -= this.stepDt;
+          Canal.Water.step(this.world);
+          this.boatMgr.update(this.stepDt);
+          steps++;
+        }
+      }
+
+      this.renderer.draw(this.boatMgr, this.input.view, dt);
+
+      this.hudTimer += dt;
+      if (this.hudTimer >= 0.2) { this.hudTimer = 0; this.updateHud(); }
+
+      requestAnimationFrame((t) => this.frame(t));
+    }
+
+    updateHud() {
+      const eco = this.economy;
+      const fmt = (n) => '£' + Math.round(n).toLocaleString('en-GB');
+      document.getElementById('stat-money').textContent = fmt(eco.money);
+      document.getElementById('stat-income').textContent = fmt(eco.incomePerMin()) + '/min';
+      document.getElementById('stat-delivered').textContent = eco.delivered;
+      document.getElementById('stat-boats').textContent = this.boatMgr.boats.length;
+    }
+  }
+
+  window.addEventListener('DOMContentLoaded', () => {
+    Canal.game = new Game();
+  });
+})(window.Canal);
