@@ -1,139 +1,131 @@
-// Water simulation: a stable cellular flow model.
+// Flux-based shallow-water simulation ("virtual pipes" model).
 //
-// Each tile has a ground height and a water depth; the "surface" is their sum.
-// Every tick water relaxes toward equal surface levels with its neighbours, so
-// it seeks its own level, pools in dug trenches, and spills over low walls.
-// Locks and walls are barriers that block this equalisation — which is exactly
-// what lets two canal "pounds" sit at different levels with a boat lift between
-// them. Locks pass a small trickle downhill to keep lower pounds topped up.
+// Each cell stores a water depth and four outflow fluxes (L/R/U/D). Every
+// substep the fluxes are accelerated by the hydraulic-head difference with each
+// neighbour (so water gains momentum and keeps flowing — real current, not just
+// instant level-equalising), then clamped so a cell never gives away more than
+// it holds, and finally depths are updated from net flux. Sources and the sea
+// are fixed-head reservoirs; walls and (closed) lock faces block flux. This is
+// what produces visible currents, fill times, and flow rates.
 (function (Canal) {
   const C = Canal.CONFIG;
   const STRUCT = Canal.STRUCT;
-  const DIRS = [ [1, 0], [-1, 0], [0, 1], [0, -1] ];
 
-  function isBarrier(w, i) {
-    const s = w.struct[i];
-    return s === STRUCT.WALL || s === STRUCT.LOCK;
+  function applyBoundaries(w) {
+    const ground = w.ground, water = w.water, struct = w.struct;
+    for (const s of w.sources) {
+      const i = w.idx(s.x, s.y);
+      water[i] = Math.max(0, C.SOURCE_LEVEL - ground[i]); // fixed-head spring
+    }
+    for (let i = 0; i < ground.length; i++) {
+      if (ground[i] < C.SEA_LEVEL) water[i] = C.SEA_LEVEL - ground[i]; // sea boundary (sink+source)
+    }
+  }
+
+  function buildPassability(w) {
+    const cols = w.cols, rows = w.rows, struct = w.struct;
+    const passR = w.passR, passD = w.passD;
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const i = y * cols + x;
+        const blocked = struct[i] === STRUCT.WALL || struct[i] === STRUCT.LOCK;
+        if (x < cols - 1) {
+          const j = i + 1;
+          passR[i] = (blocked || struct[j] === STRUCT.WALL || struct[j] === STRUCT.LOCK) ? 0 : 1;
+        } else passR[i] = 0;
+        if (y < rows - 1) {
+          const j = i + cols;
+          passD[i] = (blocked || struct[j] === STRUCT.WALL || struct[j] === STRUCT.LOCK) ? 0 : 1;
+        } else passD[i] = 0;
+      }
+    }
+    // Open the valve faces of configured locks.
+    for (const L of w.locks) {
+      if (!L.configured) continue;
+      openFace(w, L.cell, L.hiCell, L.valveHi);
+      openFace(w, L.cell, L.loCell, L.valveLo);
+    }
+  }
+
+  function openFace(w, c, other, open) {
+    if (!open || other < 0) return;
+    const cols = w.cols;
+    if (other === c + 1) w.passR[c] = 1;
+    else if (other === c - 1) w.passR[c - 1] = 1;
+    else if (other === c + cols) w.passD[c] = 1;
+    else if (other === c - cols) w.passD[c - cols] = 1;
   }
 
   function step(w) {
-    const cols = w.cols, rows = w.rows;
+    const cols = w.cols, rows = w.rows, n = w.n;
     const ground = w.ground, water = w.water, struct = w.struct;
+    const fL = w.fL, fR = w.fR, fU = w.fU, fD = w.fD;
+    const passR = w.passR, passD = w.passD;
 
-    // 1. Sources inject water up to their maintained level.
-    for (const s of w.sources) {
-      const i = w.idx(s.x, s.y);
-      const target = C.SOURCE_LEVEL - ground[i];
-      if (water[i] < target) {
-        water[i] = Math.min(target, water[i] + C.SOURCE_FEED);
-      }
-    }
+    buildPassability(w);
 
-    // 2. The sea / water table acts as a fixed boundary: any ground below sea
-    //    level is pinned to exactly sea level. This makes the sea an infinite
-    //    sink that absorbs river inflow (draining it) and never floods, as well
-    //    as a source that keeps below-sea land at the water table.
-    for (let i = 0; i < ground.length; i++) {
-      if (ground[i] < C.SEA_LEVEL) {
-        water[i] = C.SEA_LEVEL - ground[i];
-      }
-    }
+    const dt = 1 / C.SIM_HZ;
+    const sub = dt / C.WATER_SUBSTEPS;
+    const k = sub * C.FLOW_GAIN;
+    const damp = C.FLOW_DAMP;
 
-    // 3. Relaxation passes — diffuse water toward level surfaces.
-    const delta = w._delta || (w._delta = new Float32Array(ground.length));
-    for (let pass = 0; pass < C.WATER_ITER; pass++) {
-      delta.fill(0);
+    for (let s = 0; s < C.WATER_SUBSTEPS; s++) {
+      applyBoundaries(w);
+
+      // 1) update + clamp fluxes
       for (let y = 0; y < rows; y++) {
         for (let x = 0; x < cols; x++) {
           const i = y * cols + x;
-          if (isBarrier(w, i)) continue;
-          const wi = water[i];
-          if (wi <= C.MIN_FLOW) continue;
-          const si = ground[i] + wi;
+          if (struct[i] === STRUCT.WALL) { fL[i] = fR[i] = fU[i] = fD[i] = 0; continue; }
+          const si = ground[i] + water[i];
 
-          // Gather outflow to lower, non-barrier neighbours.
-          let total = 0;
-          let f0 = 0, f1 = 0, f2 = 0, f3 = 0;
-          for (let d = 0; d < 4; d++) {
-            const nx = x + DIRS[d][0], ny = y + DIRS[d][1];
-            if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
-            const j = ny * cols + nx;
-            if (isBarrier(w, j)) continue;
-            const diff = si - (ground[j] + water[j]);
-            if (diff > C.MIN_FLOW) {
-              const f = diff * C.FLOW_RATE;
-              if (d === 0) f0 = f; else if (d === 1) f1 = f; else if (d === 2) f2 = f; else f3 = f;
-              total += f;
-            }
+          let r = 0, l = 0, d = 0, u = 0;
+          if (passR[i]) r = Math.max(0, (fR[i] + k * (si - (ground[i + 1] + water[i + 1]))) * damp);
+          if (x > 0 && passR[i - 1]) l = Math.max(0, (fL[i] + k * (si - (ground[i - 1] + water[i - 1]))) * damp);
+          if (passD[i]) d = Math.max(0, (fD[i] + k * (si - (ground[i + cols] + water[i + cols]))) * damp);
+          if (y > 0 && passD[i - cols]) u = Math.max(0, (fU[i] + k * (si - (ground[i - cols] + water[i - cols]))) * damp);
+
+          // never drain a cell below empty within this substep
+          const out = (l + r + u + d) * sub;
+          if (out > water[i] && out > 1e-9) {
+            const sc = water[i] / out;
+            r *= sc; l *= sc; d *= sc; u *= sc;
           }
-          if (total <= 0) continue;
-          // Never give away more than we hold (keeps depth non-negative).
-          let scale = total > wi ? wi / total : 1;
-          for (let d = 0; d < 4; d++) {
-            const f = d === 0 ? f0 : d === 1 ? f1 : d === 2 ? f2 : f3;
-            if (f <= 0) continue;
-            const nx = x + DIRS[d][0], ny = y + DIRS[d][1];
-            const j = ny * cols + nx;
-            const m = f * scale;
-            delta[i] -= m;
-            delta[j] += m;
-          }
+          fR[i] = r; fL[i] = l; fD[i] = d; fU[i] = u;
         }
       }
-      for (let i = 0; i < delta.length; i++) {
-        if (delta[i] !== 0) {
-          water[i] += delta[i];
+
+      // 2) integrate depths from net flux
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+          const i = y * cols + x;
+          if (struct[i] === STRUCT.WALL) continue;
+          let inflow = 0;
+          if (x > 0) inflow += fR[i - 1];
+          if (x < cols - 1) inflow += fL[i + 1];
+          if (y > 0) inflow += fD[i - cols];
+          if (y < rows - 1) inflow += fU[i + cols];
+          const outflow = fL[i] + fR[i] + fU[i] + fD[i];
+          water[i] += sub * (inflow - outflow);
           if (water[i] < 0) water[i] = 0;
-          // record flow magnitude for the render shimmer
-          const m = delta[i] < 0 ? -delta[i] : delta[i];
-          if (m > w.flow[i]) w.flow[i] = m;
         }
       }
     }
 
-    // 4. Locks: hold their pounds apart, show water, and trickle downhill.
-    for (let y = 0; y < rows; y++) {
-      for (let x = 0; x < cols; x++) {
-        const i = y * cols + x;
-        if (struct[i] !== STRUCT.LOCK) continue;
-        // The high side must actually hold water (the supply); the low side is
-        // chosen by surface even if it is still dry, so a fresh lower pound can
-        // start to fill instead of being stuck empty forever.
-        let hiJ = -1, loJ = -1, hiS = -Infinity, loS = Infinity;
-        for (let d = 0; d < 4; d++) {
-          const nx = x + DIRS[d][0], ny = y + DIRS[d][1];
-          if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
-          const j = ny * cols + nx;
-          if (struct[j] === STRUCT.WALL) continue;
-          const s = ground[j] + water[j];
-          const supplies = water[j] > 0.02 || struct[j] === STRUCT.SOURCE;
-          if (supplies && s > hiS) { hiS = s; hiJ = j; }
-          if (s < loS) { loS = s; loJ = j; }
-        }
-        if (hiJ < 0) { water[i] = 0; continue; }
-        // Visible water in the lock chamber.
-        water[i] = Math.max(C.MIN_DRAFT + 0.15, Math.min(3, hiS - ground[i]));
-        // Trickle from the high pound to the low pound.
-        if (loJ >= 0 && hiJ !== loJ && hiS - loS > 0.05) {
-          let m = Math.min(C.LOCK_TRICKLE, water[hiJ], hiS - loS);
-          if (m > 0) { water[hiJ] -= m; water[loJ] += m; }
-        }
-      }
-    }
+    applyBoundaries(w);
 
-    // 5. Edges drain off-map; gentle evaporation dries abandoned puddles.
+    // 3) smoothed velocity field for rendering (net flux through each cell)
+    const vx = w.vx, vy = w.vy;
     for (let y = 0; y < rows; y++) {
       for (let x = 0; x < cols; x++) {
         const i = y * cols + x;
-        if (w.isEdge(x, y)) {
-          const cap = Math.max(0, C.SEA_LEVEL - ground[i] + 0.2);
-          if (water[i] > cap) water[i] = cap + (water[i] - cap) * 0.4;
-        }
-        if (ground[i] >= C.SEA_LEVEL && struct[i] !== STRUCT.SOURCE && water[i] > 0) {
-          water[i] = Math.max(0, water[i] - C.EVAP);
-        }
-        // decay the shimmer record
-        w.flow[i] *= 0.86;
+        let nx = 0, ny = 0;
+        if (x > 0) nx += fR[i - 1]; if (x < cols - 1) nx -= fL[i + 1];
+        nx += fR[i] - fL[i];
+        if (y > 0) ny += fD[i - cols]; if (y < rows - 1) ny -= fU[i + cols];
+        ny += fD[i] - fU[i];
+        vx[i] += (nx * 0.5 - vx[i]) * 0.25;
+        vy[i] += (ny * 0.5 - vy[i]) * 0.25;
       }
     }
   }

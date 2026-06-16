@@ -207,8 +207,10 @@
       const i = w.idx(x, y);
       if (w.struct[i] !== STRUCT.NONE) { Canal.toast('Tile is already occupied.', 'bad'); return; }
       if (!eco.spend(C.COST_LOCK)) { this.warnMoney(); return; }
-      w.struct[i] = STRUCT.LOCK;
-      Canal.toast('Lock built.', 'good');
+      this.game.lockMgr.build(x, y);
+      const L = this.game.lockMgr.lockAt(i);
+      Canal.toast(L && L.configured ? 'Lock built — it will lift boats between the two pounds.'
+        : 'Lock built. Dig a channel on both sides so it can bridge two pounds.', 'good');
       this.game.updateHud();
     }
 
@@ -234,7 +236,11 @@
 
     bulldoze(x, y) {
       const w = this.world;
-      if (w.removeStructure(x, y)) {
+      const i = w.idx(x, y);
+      let removed = false;
+      if (w.struct[i] === STRUCT.LOCK) removed = this.game.lockMgr.remove(x, y);
+      else removed = w.removeStructure(x, y);
+      if (removed) {
         this.game.boatMgr.pruneRoutes();
         Canal.toast('Removed.', 'info');
         this.game.updateHud();
@@ -290,14 +296,24 @@
       const surf = ground + depth;
       const structNames = ['Open', 'Lock', 'Dock', 'Water source', 'Wall'];
       const nav = w.navigable(this.hoverX, this.hoverY);
+      const speed = Math.hypot(w.vx[i], w.vy[i]);
       const rows = [
         ['Tile', this.hoverX + ', ' + this.hoverY],
         ['Ground', ground.toFixed(1) + ' m'],
         ['Water depth', depth.toFixed(2) + ' m'],
         ['Surface', surf.toFixed(1) + ' m'],
+        ['Flow', speed < 0.03 ? 'still' : speed.toFixed(2) + ' m³/s'],
         ['Structure', structNames[w.struct[i]]],
         ['Navigable', nav ? 'yes' : 'no'],
       ];
+      if (w.struct[i] === STRUCT.LOCK) {
+        const L = this.game.lockMgr.lockAt(i);
+        if (L) {
+          const stateLabel = { open_lo: 'open (low)', open_hi: 'open (high)', filling: 'filling ▲', emptying: 'emptying ▼' };
+          rows.push(['Lock', L.configured ? (stateLabel[L.state] || L.state) : 'needs two pounds']);
+          if (L.configured) rows.push(['Queue', String(L.queue.length + (L.occupant ? 1 : 0))]);
+        }
+      }
       el.innerHTML = rows.map((r) => '<div class="row"><span class="muted">' + r[0] + '</span><span>' + r[1] + '</span></div>').join('');
     }
   }

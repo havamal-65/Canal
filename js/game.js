@@ -23,7 +23,8 @@
     constructor() {
       this.world = new Canal.World((Math.random() * 1e9) | 0);
       this.economy = new Canal.Economy();
-      this.boatMgr = new Canal.BoatManager(this.world, this.economy);
+      this.lockMgr = new Canal.LockManager(this.world);
+      this.boatMgr = new Canal.BoatManager(this.world, this.economy, this.lockMgr);
       this.renderer = new Canal.Renderer(document.getElementById('game'), this.world);
       this.input = new Canal.Input(this);
 
@@ -78,6 +79,7 @@
         let steps = 0;
         while (this.acc >= this.stepDt && steps < 8) {
           this.acc -= this.stepDt;
+          this.lockMgr.update(this.stepDt);
           Canal.Water.step(this.world);
           this.boatMgr.update(this.stepDt);
           steps++;

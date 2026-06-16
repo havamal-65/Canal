@@ -83,11 +83,35 @@ js/input.js       tools, brush, route building, inspector
 js/game.js        main loop (fixed‑timestep sim + rAF render) and HUD
 ```
 
-## Design notes
+## Design notes — the three hard systems
 
-The "realistic water flow" is a stable cellular relaxation: every tick each
-tile diffuses water toward equal surface height with its neighbours, so water
-levels out, pools, and spills naturally. The sea is a fixed boundary that drains
-inflow, sources inject water up to a maintained level, and locks act as barriers
-that keep two pounds at different heights while passing boats — exactly why real
-canals need them.
+These are the parts that make the game what it is, so they're modelled properly
+rather than faked.
+
+**1. Flow-based water (`js/water.js`).** A shallow-water "virtual pipes" model:
+every cell holds a depth plus four outflow fluxes, and each substep those fluxes
+are *accelerated* by the hydraulic-head difference with each neighbour, then
+clamped so no cell over-drains. Because flux carries momentum across frames you
+get real **current** — rivers flow downhill with measurable velocity, channels
+have throughput, and a freshly dug canal takes time to fill. The sea and springs
+are fixed-head reservoirs (the sea drains inflow; springs supply it). Hover a
+tile to read its flow rate; the animated streaks on the water show direction.
+
+**2. Real locks (`js/locks.js`).** A lock is a one-cell chamber bridging an upper
+and a lower pound, with two gates and two sluice valves driven by a state
+machine. Crucially, the water sim moves water through whichever valve is open, so
+the chamber genuinely **fills from the upper pound and empties into the lower
+one** — meaning *every lock cycle spends a chamber-ful of water downhill*. That's
+the real engineering constraint: a busy lock drains its summit, so you must feed
+it from springs/reservoirs or boats get stranded. Closed locks also leak a little
+downhill, which is how lower pounds first fill. Going up: enter low, gates close,
+chamber fills, you rise, top gate opens, exit high (and the mirror going down).
+
+**3. Boat navigation & traffic (`js/boats.js`, `js/pathfind.js`).** A* routes
+over water for each boat's **draft** (deep boats avoid shallow channels) and can
+cross a lock via a bridge edge between its two pounds. Boats reserve the cell
+ahead so they **follow without overlapping**, **queue** at a busy lock (one boat
+locks through at a time), and a boat inside a lock has right of way — a deadlock
+breaker lets it push out past a boat squatting on the exit. Boats re-route when
+their water changes. Single-lane canals serialise traffic; dig wider or add
+passing places for throughput.
