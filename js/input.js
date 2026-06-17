@@ -186,7 +186,12 @@
             const wet = w.water[ni] > 0.02 || w.ground[ni] < C.SEA_LEVEL || w.struct[ni] === STRUCT.SOURCE;
             if (wet) maxSurf = Math.max(maxSurf, w.ground[ni] + w.water[ni]);
           }
-          if (maxSurf > w.ground[i] + 0.02) w.water[i] = Math.max(w.water[i], maxSurf - w.ground[i]);
+          if (maxSurf > w.ground[i] + 0.02) {
+            // seed only partway, so the (faster) sim visibly flows in the rest
+            // instead of the channel snapping straight to its final level
+            const target = maxSurf - w.ground[i];
+            w.water[i] = Math.max(w.water[i], target * 0.6);
+          }
           changed = true;
         } else {
           if (w.ground[i] >= C.MAX_ELEV) continue;

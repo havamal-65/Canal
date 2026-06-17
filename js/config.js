@@ -18,9 +18,9 @@ Canal.CONFIG = {
 
   // --- Water simulation (flux / shallow-water "virtual pipes" model) ---
   SIM_HZ: 30,
-  WATER_SUBSTEPS: 4,    // flux substeps per sim tick (stability + speed)
-  FLOW_GAIN: 9.0,       // g*A/l — how strongly head differences accelerate flow
-  FLOW_DAMP: 0.975,     // per-substep flux damping (kills perpetual sloshing)
+  WATER_SUBSTEPS: 6,    // flux substeps per sim tick (stability + speed)
+  FLOW_GAIN: 16.0,      // g*A/l — how strongly head differences accelerate flow
+  FLOW_DAMP: 0.992,     // per-substep flux damping (lower = livelier current/sloshing)
   MIN_DEPTH: 0.001,     // ignore films thinner than this for flow
   MIN_DRAFT: 0.45,      // default depth a boat needs to float
 
