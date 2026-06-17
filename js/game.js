@@ -96,11 +96,7 @@
     }
 
     updateHud() {
-      const eco = this.economy;
-      const fmt = (n) => '£' + Math.round(n).toLocaleString('en-GB');
-      document.getElementById('stat-money').textContent = fmt(eco.money);
-      document.getElementById('stat-income').textContent = fmt(eco.incomePerMin()) + '/min';
-      document.getElementById('stat-delivered').textContent = eco.delivered;
+      document.getElementById('stat-delivered').textContent = this.economy.delivered;
       document.getElementById('stat-boats').textContent = this.boatMgr.boats.length;
     }
   }

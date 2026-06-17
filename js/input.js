@@ -19,12 +19,10 @@
       this.painting = false;
       this.paintAccum = 0;
       this.routePick = null; // first dock chosen for a route
-      this.lastNoMoney = 0;
 
       this.bindToolbar();
       this.bindCanvas();
       this.bindKeys();
-      this.refreshCosts();
     }
 
     // ---- shared view state for the renderer/preview ----
@@ -39,16 +37,7 @@
     }
 
     previewValid() {
-      if (this.hoverX < 0) return false;
-      const eco = this.game.economy;
-      switch (this.tool) {
-        case 'dig': return eco.canAfford(C.COST_DIG);
-        case 'fill': return eco.canAfford(C.COST_FILL);
-        case 'lock': return eco.canAfford(C.COST_LOCK);
-        case 'dock': return eco.canAfford(C.COST_DOCK);
-        case 'source': return eco.canAfford(C.COST_SOURCE);
-        default: return true;
-      }
+      return this.hoverX >= 0;
     }
 
     // ---- toolbar / speed / brush buttons ----
@@ -177,60 +166,52 @@
     }
 
     paintBrush() {
-      const w = this.world, eco = this.game.economy;
+      const w = this.world;
       let changed = false;
       for (const { x, y } of this.brushTiles()) {
         const i = w.idx(x, y);
         if (w.struct[i] !== STRUCT.NONE) continue; // don't carve through structures
         if (this.tool === 'dig') {
           if (w.ground[i] <= C.MIN_GROUND) continue;
-          if (!eco.spend(C.COST_DIG)) { this.warnMoney(); break; }
           w.ground[i] = Math.max(C.MIN_GROUND, w.ground[i] - C.DIG_STEP);
           changed = true;
         } else {
           if (w.ground[i] >= C.MAX_ELEV) continue;
-          if (!eco.spend(C.COST_FILL)) { this.warnMoney(); break; }
           w.ground[i] = Math.min(C.MAX_ELEV, w.ground[i] + C.FILL_STEP);
           // filling pushes water out of the tile
           if (w.water[i] > 0 && w.ground[i] > C.SEA_LEVEL) w.water[i] = Math.max(0, w.water[i] - C.FILL_STEP);
           changed = true;
         }
       }
-      if (changed) { this.markTerrain(); this.game.updateHud(); }
+      if (changed) this.markTerrain();
     }
 
     placeLock(x, y) {
-      const w = this.world, eco = this.game.economy;
+      const w = this.world;
       const i = w.idx(x, y);
       if (w.struct[i] !== STRUCT.NONE) { Canal.toast('Tile is already occupied.', 'bad'); return; }
-      if (!eco.spend(C.COST_LOCK)) { this.warnMoney(); return; }
       this.game.lockMgr.build(x, y);
       this.markTerrain();
       const L = this.game.lockMgr.lockAt(i);
       Canal.toast(L && L.configured ? 'Lock built — it will lift boats between the two pounds.'
         : 'Lock built. Dig a channel on both sides so it can bridge two pounds.', 'good');
-      this.game.updateHud();
     }
 
     placeDock(x, y) {
-      const w = this.world, eco = this.game.economy;
+      const w = this.world;
       const i = w.idx(x, y);
       if (w.struct[i] !== STRUCT.NONE) { Canal.toast('Tile is already occupied.', 'bad'); return; }
-      if (!eco.spend(C.COST_DOCK)) { this.warnMoney(); return; }
       w.addDock(x, y);
       Canal.toast('Dock built. Link two docks with the Route tool.', 'good');
-      this.game.updateHud();
     }
 
     placeSource(x, y) {
-      const w = this.world, eco = this.game.economy;
+      const w = this.world;
       const i = w.idx(x, y);
       if (w.struct[i] !== STRUCT.NONE) { Canal.toast('Tile is already occupied.', 'bad'); return; }
-      if (!eco.spend(C.COST_SOURCE)) { this.warnMoney(); return; }
       w.addSource(x, y);
       this.markTerrain();
       Canal.toast('Water source placed.', 'good');
-      this.game.updateHud();
     }
 
     bulldoze(x, y) {
@@ -255,31 +236,10 @@
         return;
       }
       if (dock === this.routePick) { Canal.toast('Pick a different destination dock.', 'bad'); return; }
-      const eco = this.game.economy;
-      if (!eco.spend(C.COST_BOAT)) { this.warnMoney(); this.routePick = null; return; }
       this.game.boatMgr.addRoute([this.routePick, dock]);
-      Canal.toast('Route opened: Dock ' + this.routePick.id + ' → Dock ' + dock.id + '. Boat purchased.', 'good');
+      Canal.toast('Route opened: Dock ' + this.routePick.id + ' → Dock ' + dock.id + '. Boat added.', 'good');
       this.routePick = null;
       this.game.updateHud();
-    }
-
-    warnMoney() {
-      const now = performance.now();
-      if (now - this.lastNoMoney > 1200) {
-        Canal.toast('Not enough cash.', 'bad');
-        this.lastNoMoney = now;
-      }
-    }
-
-    // ---- inspector ----
-    refreshCosts() {
-      const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-      set('cost-dig', '£' + C.COST_DIG);
-      set('cost-fill', '£' + C.COST_FILL);
-      set('cost-lock', '£' + C.COST_LOCK);
-      set('cost-dock', '£' + C.COST_DOCK);
-      set('cost-source', '£' + C.COST_SOURCE);
-      set('cost-route', '£' + C.COST_BOAT);
     }
 
     updateInspector() {

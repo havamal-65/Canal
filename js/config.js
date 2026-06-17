@@ -36,16 +36,6 @@ Canal.CONFIG = {
   DOCK_DELAY: 1.4,      // seconds loading/unloading
   BOAT_ENTER_TIME: 0.6, // seconds to glide into/out of a lock chamber
   BLOCK_TIMEOUT: 4.0,   // seconds stuck behind traffic before forcing a move
-
-  // --- Economy ---
-  START_MONEY: 6000,
-  COST_DIG: 8,
-  COST_FILL: 5,
-  COST_LOCK: 600,
-  COST_DOCK: 350,
-  COST_SOURCE: 250,
-  COST_BOAT: 800,
-  CARGO_VALUE: 140,
 };
 
 Canal.STRUCT = {
