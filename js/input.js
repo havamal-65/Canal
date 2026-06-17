@@ -174,6 +174,19 @@
         if (this.tool === 'dig') {
           if (w.ground[i] <= C.MIN_GROUND) continue;
           w.ground[i] = Math.max(C.MIN_GROUND, w.ground[i] - C.DIG_STEP);
+          // water follows the shovel: if a neighbouring water body sits higher
+          // than the freshly dug floor, let it flow in right away (the sim then
+          // carries it on down the new channel).
+          let maxSurf = -Infinity;
+          for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const nx = x + dx, ny = y + dy;
+            if (!w.inBounds(nx, ny)) continue;
+            const ni = w.idx(nx, ny);
+            if (w.struct[ni] === STRUCT.WALL || w.struct[ni] === STRUCT.LOCK) continue;
+            const wet = w.water[ni] > 0.02 || w.ground[ni] < C.SEA_LEVEL || w.struct[ni] === STRUCT.SOURCE;
+            if (wet) maxSurf = Math.max(maxSurf, w.ground[ni] + w.water[ni]);
+          }
+          if (maxSurf > w.ground[i] + 0.02) w.water[i] = Math.max(w.water[i], maxSurf - w.ground[i]);
           changed = true;
         } else {
           if (w.ground[i] >= C.MAX_ELEV) continue;
