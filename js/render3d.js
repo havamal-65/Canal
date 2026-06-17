@@ -306,6 +306,7 @@ class ThreeRenderer {
     // per-vertex flow direction and foam amount, fed to the shader each frame
     this.waterGeo.setAttribute('aFlow', new THREE.BufferAttribute(new Float32Array(nv * 2), 2));
     this.waterGeo.setAttribute('aFoam', new THREE.BufferAttribute(new Float32Array(nv), 1));
+    this.waterGeo.setAttribute('aWet', new THREE.BufferAttribute(new Float32Array(nv), 1));
     this.waterGeo.computeBoundingSphere();
 
     const sun = new THREE.Vector3(this.cols * 0.35, 70, this.rows * 0.15).normalize();
@@ -316,9 +317,10 @@ class ThreeRenderer {
         attribute vec3 color;
         attribute vec2 aFlow;
         attribute float aFoam;
-        varying vec3 vTint; varying vec2 vFlow; varying float vFoam; varying vec3 vWorld;
+        attribute float aWet;
+        varying vec3 vTint; varying vec2 vFlow; varying float vFoam; varying float vWet; varying vec3 vWorld;
         void main() {
-          vTint = color; vFlow = aFlow; vFoam = aFoam;
+          vTint = color; vFlow = aFlow; vFoam = aFoam; vWet = aWet;
           vec4 wp = modelMatrix * vec4(position, 1.0);
           vWorld = wp.xyz;
           gl_Position = projectionMatrix * viewMatrix * wp;
@@ -326,7 +328,7 @@ class ThreeRenderer {
       fragmentShader: `
         precision highp float;
         uniform float uTime; uniform vec3 uSunDir;
-        varying vec3 vTint; varying vec2 vFlow; varying float vFoam; varying vec3 vWorld;
+        varying vec3 vTint; varying vec2 vFlow; varying float vFoam; varying float vWet; varying vec3 vWorld;
         void main() {
           float sp = length(vFlow);
           vec2 dir = sp > 0.0015 ? vFlow / sp : vec2(0.7071, 0.7071);
@@ -353,6 +355,8 @@ class ThreeRenderer {
           float foam = clamp(vFoam, 0.0, 1.0) * crest;
           col = mix(col, vec3(0.92, 0.96, 1.0), foam * 0.65);
           float alpha = clamp(0.85 + fres * 0.12 + foam * 0.25, 0.0, 1.0);
+          alpha *= smoothstep(0.05, 0.45, vWet); // soft shoreline; hide dry edges
+          if (alpha < 0.02) discard;
           gl_FragColor = vec4(col, alpha);
           #include <tonemapping_fragment>
           #include <colorspace_fragment>
@@ -369,6 +373,7 @@ class ThreeRenderer {
     const col = this.waterGeo.attributes.color.array;
     const flow = this.waterGeo.attributes.aFlow.array;
     const foam = this.waterGeo.attributes.aFoam.array;
+    const wetA = this.waterGeo.attributes.aWet.array;
     const shallow = [0.22, 0.55, 0.88], deep = [0.06, 0.28, 0.62];
     for (let j = 0; j <= rows; j++) {
       for (let i = 0; i <= cols; i++) {
@@ -383,8 +388,12 @@ class ThreeRenderer {
         }
         const k = (j * vw + i) * 3, k2 = (j * vw + i) * 2, k1 = j * vw + i;
         const gAvg = gN ? gSum / gN : 0;
-        if (depth > 0.05 && surfN) {
-          pos[k + 1] = (surfSum / surfN) * HS + (rip / gN) * 0.18;
+        const wetness = gN ? surfN / gN : 0;
+        if (surfN) {
+          const surf = surfSum / surfN;
+          // blend the water surface down to terrain on dry sides so the mesh
+          // meets the shoreline instead of stretching up steep dug walls
+          pos[k + 1] = (gAvg * (1 - wetness) + surf * wetness) * HS + (rip / gN) * 0.18 * wetness;
           const dn = Math.min(depth / 3, 1);
           col[k] = shallow[0] + (deep[0] - shallow[0]) * dn;
           col[k + 1] = shallow[1] + (deep[1] - shallow[1]) * dn;
@@ -392,16 +401,18 @@ class ThreeRenderer {
           flow[k2] = fx / surfN; flow[k2 + 1] = fy / surfN;
           foam[k1] = Math.min(1, Math.max(0, ((spd / surfN) - 0.12) * 3.0));
         } else {
-          pos[k + 1] = gAvg * HS - 0.25; // dry: tuck under the terrain
+          pos[k + 1] = gAvg * HS; // dry: sit on terrain (faded out by aWet=0)
           col[k] = deep[0]; col[k + 1] = deep[1]; col[k + 2] = deep[2];
           flow[k2] = 0; flow[k2 + 1] = 0; foam[k1] = 0;
         }
+        wetA[k1] = wetness;
       }
     }
     this.waterGeo.attributes.position.needsUpdate = true;
     this.waterGeo.attributes.color.needsUpdate = true;
     this.waterGeo.attributes.aFlow.needsUpdate = true;
     this.waterGeo.attributes.aFoam.needsUpdate = true;
+    this.waterGeo.attributes.aWet.needsUpdate = true;
   }
 
   // ---------- structures, boats, highlight ----------
