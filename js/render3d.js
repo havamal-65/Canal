@@ -33,6 +33,75 @@ function terrainColor(h, out) {
   out[0] = c[0] / 255; out[1] = c[1] / 255; out[2] = c[2] / 255;
 }
 
+// soft radial sprite for spray/foam points
+function makeSprite() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d');
+  const grd = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grd.addColorStop(0, 'rgba(255,255,255,1)');
+  grd.addColorStop(0.4, 'rgba(255,255,255,0.55)');
+  grd.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grd;
+  g.fillRect(0, 0, 64, 64);
+  const t = new THREE.CanvasTexture(c);
+  return t;
+}
+
+// Additive-blended point particles: spray (kind 0, gravity) and foam (kind 1,
+// drifts on the surface). A ring buffer recycles the oldest particles.
+class Spray {
+  constructor(scene, max) {
+    this.max = max;
+    this.pos = new Float32Array(max * 3);
+    this.col = new Float32Array(max * 3);
+    this.vel = new Float32Array(max * 3);
+    this.life = new Float32Array(max);
+    this.ttl = new Float32Array(max);
+    this.kind = new Uint8Array(max);
+    for (let i = 0; i < max; i++) this.pos[i * 3 + 1] = -999;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(this.pos, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(this.col, 3));
+    this.geo = geo;
+    const mat = new THREE.PointsMaterial({
+      size: 0.5, map: makeSprite(), transparent: true, depthWrite: false,
+      blending: THREE.AdditiveBlending, vertexColors: true, sizeAttenuation: true,
+    });
+    this.points = new THREE.Points(geo, mat);
+    this.points.frustumCulled = false;
+    this.points.renderOrder = 2;
+    scene.add(this.points);
+    this.cursor = 0;
+  }
+
+  spawn(x, y, z, vx, vy, vz, ttl, kind) {
+    const i = this.cursor;
+    this.cursor = (this.cursor + 1) % this.max;
+    this.pos[i * 3] = x; this.pos[i * 3 + 1] = y; this.pos[i * 3 + 2] = z;
+    this.vel[i * 3] = vx; this.vel[i * 3 + 1] = vy; this.vel[i * 3 + 2] = vz;
+    this.life[i] = ttl; this.ttl[i] = ttl; this.kind[i] = kind;
+  }
+
+  update(dt) {
+    const g = 9.0;
+    for (let i = 0; i < this.max; i++) {
+      if (this.life[i] <= 0) { this.pos[i * 3 + 1] = -999; this.col[i * 3] = this.col[i * 3 + 1] = this.col[i * 3 + 2] = 0; continue; }
+      this.life[i] -= dt;
+      if (this.kind[i] === 0) this.vel[i * 3 + 1] -= g * dt; // spray arcs and falls
+      else { this.vel[i * 3] *= 0.96; this.vel[i * 3 + 2] *= 0.96; } // foam drifts and slows
+      this.pos[i * 3] += this.vel[i * 3] * dt;
+      this.pos[i * 3 + 1] += this.vel[i * 3 + 1] * dt;
+      this.pos[i * 3 + 2] += this.vel[i * 3 + 2] * dt;
+      const f = Math.max(0, this.life[i] / this.ttl[i]);
+      const b = f * (this.kind[i] === 0 ? 1.0 : 0.7);
+      this.col[i * 3] = b * 0.9; this.col[i * 3 + 1] = b * 0.96; this.col[i * 3 + 2] = b;
+    }
+    this.geo.attributes.position.needsUpdate = true;
+    this.geo.attributes.color.needsUpdate = true;
+  }
+}
+
 class ThreeRenderer {
   constructor(canvas, world) {
     this.canvas = canvas;
@@ -67,6 +136,7 @@ class ThreeRenderer {
     this.boatsGroup = new THREE.Group();
     this.highlightGroup = new THREE.Group();
     this.scene.add(this.structures, this.boatsGroup, this.highlightGroup);
+    this.spray = new Spray(this.scene, 1500);
 
     this._initCamera();
     this._bindCameraControls();
@@ -177,19 +247,67 @@ class ThreeRenderer {
   // ---------- water ----------
   _buildWater() {
     this.waterGeo = this._gridGeometry();
-    // lay out the X/Z grid once (updateWater only moves Y each frame)
-    const cols = this.cols, rows = this.rows, vw = cols + 1;
+    const cols = this.cols, rows = this.rows, vw = cols + 1, nv = vw * (rows + 1);
     const pos = this.waterGeo.attributes.position.array;
     for (let j = 0; j <= rows; j++) {
       for (let i = 0; i <= cols; i++) { const k = (j * vw + i) * 3; pos[k] = i; pos[k + 1] = 0; pos[k + 2] = j; }
     }
+    // per-vertex flow direction and foam amount, fed to the shader each frame
+    this.waterGeo.setAttribute('aFlow', new THREE.BufferAttribute(new Float32Array(nv * 2), 2));
+    this.waterGeo.setAttribute('aFoam', new THREE.BufferAttribute(new Float32Array(nv), 1));
     this.waterGeo.computeBoundingSphere();
-    const mat = new THREE.MeshStandardMaterial({
-      vertexColors: true, transparent: true, opacity: 0.95,
-      roughness: 0.3, metalness: 0.0, side: THREE.DoubleSide,
-      emissive: 0x0a2238, emissiveIntensity: 0.6,
+
+    const sun = new THREE.Vector3(this.cols * 0.35, 70, this.rows * 0.15).normalize();
+    this.waterMat = new THREE.ShaderMaterial({
+      transparent: true, side: THREE.DoubleSide, depthWrite: true,
+      uniforms: { uTime: { value: 0 }, uSunDir: { value: sun } },
+      vertexShader: `
+        attribute vec3 color;
+        attribute vec2 aFlow;
+        attribute float aFoam;
+        varying vec3 vTint; varying vec2 vFlow; varying float vFoam; varying vec3 vWorld;
+        void main() {
+          vTint = color; vFlow = aFlow; vFoam = aFoam;
+          vec4 wp = modelMatrix * vec4(position, 1.0);
+          vWorld = wp.xyz;
+          gl_Position = projectionMatrix * viewMatrix * wp;
+        }`,
+      fragmentShader: `
+        precision highp float;
+        uniform float uTime; uniform vec3 uSunDir;
+        varying vec3 vTint; varying vec2 vFlow; varying float vFoam; varying vec3 vWorld;
+        void main() {
+          float sp = length(vFlow);
+          vec2 dir = sp > 0.0015 ? vFlow / sp : vec2(0.7071, 0.7071);
+          vec2 perp = vec2(-dir.y, dir.x);
+          vec2 p = vWorld.xz;
+          float scroll = uTime * (0.7 + sp * 4.0);          // ripples travel downstream
+          float a1 = dot(p, dir) * 2.0 - scroll;
+          float a2 = dot(p, dir) * 4.3 - scroll * 1.7;
+          float a3 = dot(p, perp) * 3.0 - uTime * 1.1;
+          float h = 0.5 * sin(a1) + 0.25 * sin(a2) + 0.15 * sin(a3);
+          vec2 grad = 0.5 * cos(a1) * 2.0 * dir + 0.25 * cos(a2) * 4.3 * dir + 0.15 * cos(a3) * 3.0 * perp;
+          vec3 N = normalize(vec3(-grad.x * 0.08, 1.0, -grad.y * 0.08));
+          vec3 V = normalize(cameraPosition - vWorld);
+          vec3 L = normalize(uSunDir);
+          float diff = clamp(dot(N, L), 0.0, 1.0);
+          vec3 Hh = normalize(L + V);
+          float spec = pow(clamp(dot(N, Hh), 0.0, 1.0), 90.0);
+          float fres = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 4.0);
+          vec3 sky = vec3(0.45, 0.62, 0.88);
+          vec3 col = vTint * (0.5 + 0.6 * diff);
+          col = mix(col, sky, fres * 0.45);
+          col += spec * vec3(1.0) * 0.9;
+          float crest = smoothstep(0.35, 0.85, h * 0.5 + 0.5);
+          float foam = clamp(vFoam, 0.0, 1.0) * crest;
+          col = mix(col, vec3(0.92, 0.96, 1.0), foam * 0.65);
+          float alpha = clamp(0.85 + fres * 0.12 + foam * 0.25, 0.0, 1.0);
+          gl_FragColor = vec4(col, alpha);
+          #include <colorspace_fragment>
+        }`,
     });
-    this.waterMesh = new THREE.Mesh(this.waterGeo, mat);
+    this.waterMesh = new THREE.Mesh(this.waterGeo, this.waterMat);
+    this.waterMesh.renderOrder = 1;
     this.scene.add(this.waterMesh);
   }
 
@@ -197,41 +315,41 @@ class ThreeRenderer {
     const w = this.world, cols = this.cols, rows = this.rows, vw = cols + 1;
     const pos = this.waterGeo.attributes.position.array;
     const col = this.waterGeo.attributes.color.array;
-    const t = this.time;
+    const flow = this.waterGeo.attributes.aFlow.array;
+    const foam = this.waterGeo.attributes.aFoam.array;
     const shallow = [0.22, 0.55, 0.88], deep = [0.06, 0.28, 0.62];
     for (let j = 0; j <= rows; j++) {
       for (let i = 0; i <= cols; i++) {
-        // gather the up-to-4 cells around this vertex
-        let depth = 0, surfSum = 0, surfN = 0, gSum = 0, gN = 0, vel = 0;
+        let depth = 0, surfSum = 0, surfN = 0, gSum = 0, gN = 0, fx = 0, fy = 0, spd = 0;
         for (const [ci, cj] of [[i - 1, j - 1], [i, j - 1], [i - 1, j], [i, j]]) {
           if (ci < 0 || cj < 0 || ci >= cols || cj >= rows) continue;
           const id = cj * cols + ci;
           gSum += w.ground[id]; gN++;
           const d = w.water[id];
           if (d > depth) depth = d;
-          if (d > 0.04) { surfSum += w.ground[id] + d; surfN++; vel += Math.hypot(w.vx[id], w.vy[id]); }
+          if (d > 0.04) { surfSum += w.ground[id] + d; surfN++; fx += w.vx[id]; fy += w.vy[id]; spd += Math.hypot(w.vx[id], w.vy[id]); }
         }
-        const k = (j * vw + i) * 3;
+        const k = (j * vw + i) * 3, k2 = (j * vw + i) * 2, k1 = j * vw + i;
         const gAvg = gN ? gSum / gN : 0;
         if (depth > 0.05 && surfN) {
-          const surf = surfSum / surfN;
-          const ripple = Math.sin(t * 1.6 + (i + j) * 0.6) * 0.025 + Math.sin(t * 2.3 + i * 0.5) * 0.02;
-          pos[k + 1] = surf * HS + ripple;
+          pos[k + 1] = (surfSum / surfN) * HS;
           const dn = Math.min(depth / 3, 1);
-          const sp = Math.min((vel / surfN) * 8, 0.4);
-          col[k] = shallow[0] + (deep[0] - shallow[0]) * dn + sp * 0.25;
-          col[k + 1] = shallow[1] + (deep[1] - shallow[1]) * dn + sp * 0.3;
-          col[k + 2] = shallow[2] + (deep[2] - shallow[2]) * dn + sp * 0.35;
+          col[k] = shallow[0] + (deep[0] - shallow[0]) * dn;
+          col[k + 1] = shallow[1] + (deep[1] - shallow[1]) * dn;
+          col[k + 2] = shallow[2] + (deep[2] - shallow[2]) * dn;
+          flow[k2] = fx / surfN; flow[k2 + 1] = fy / surfN;
+          foam[k1] = Math.min(1, Math.max(0, ((spd / surfN) - 0.12) * 3.0));
         } else {
-          // dry: tuck the water surface just under the terrain so it's hidden
-          pos[k + 1] = gAvg * HS - 0.25;
+          pos[k + 1] = gAvg * HS - 0.25; // dry: tuck under the terrain
           col[k] = deep[0]; col[k + 1] = deep[1]; col[k + 2] = deep[2];
+          flow[k2] = 0; flow[k2 + 1] = 0; foam[k1] = 0;
         }
       }
     }
     this.waterGeo.attributes.position.needsUpdate = true;
     this.waterGeo.attributes.color.needsUpdate = true;
-    this.waterGeo.computeVertexNormals();
+    this.waterGeo.attributes.aFlow.needsUpdate = true;
+    this.waterGeo.attributes.aFoam.needsUpdate = true;
   }
 
   // ---------- structures, boats, highlight ----------
@@ -406,10 +524,46 @@ class ThreeRenderer {
     this.time += dt;
     if (this._terrainDirty) { this.refreshTerrain(); this._terrainDirty = false; }
     this.updateWater();
+    this.waterMat.uniforms.uTime.value = this.time;
     this.rebuildStructures();
     this.rebuildBoats(boatMgr);
     this.rebuildHighlight(view);
+    this.emitParticles(dt);
+    this.spray.update(dt);
     this.renderer.render(this.scene, this.camera);
+  }
+
+  // spray at active lock chambers, mist at the spring, foam on fast water
+  emitParticles(dt) {
+    const w = this.world, S = this.spray;
+    for (const L of w.locks) {
+      if (!L.configured) continue;
+      if (L.state === 'filling' || L.state === 'emptying') {
+        const c = this.cellCenter(L.cell), surf = w.surfaceI(L.cell) * HS;
+        for (let n = 0; n < 3; n++) {
+          S.spawn(c.x + (Math.random() - 0.5) * 0.7, surf + 0.05, c.z + (Math.random() - 0.5) * 0.7,
+            (Math.random() - 0.5) * 1.2, 1.5 + Math.random() * 1.8, (Math.random() - 0.5) * 1.2, 0.6 + Math.random() * 0.5, 0);
+        }
+      }
+    }
+    for (const s of w.sources) {
+      if (Math.random() < 0.3) {
+        const i = w.idx(s.x, s.y), surf = (w.ground[i] + w.water[i]) * HS;
+        S.spawn(s.x + 0.5 + (Math.random() - 0.5) * 0.6, surf + 0.05, s.y + 0.5 + (Math.random() - 0.5) * 0.6,
+          (Math.random() - 0.5) * 0.6, 0.6 + Math.random() * 0.8, (Math.random() - 0.5) * 0.6, 0.8 + Math.random() * 0.6, 0);
+      }
+    }
+    let budget = 10;
+    for (let k = 0; k < 36 && budget > 0; k++) {
+      const x = (Math.random() * this.cols) | 0, y = (Math.random() * this.rows) | 0, i = y * this.cols + x;
+      if (w.water[i] < C.MIN_DRAFT) continue;
+      const sp = Math.hypot(w.vx[i], w.vy[i]);
+      if (sp < 0.13) continue;
+      const surf = (w.ground[i] + w.water[i]) * HS;
+      S.spawn(x + 0.5 + (Math.random() - 0.5) * 0.8, surf + 0.03, y + 0.5 + (Math.random() - 0.5) * 0.8,
+        w.vx[i] * 1.2, 0.1, w.vy[i] * 1.2, 1.0 + Math.random(), 1);
+      budget--;
+    }
   }
 
   markTerrainDirty() { this._terrainDirty = true; }
