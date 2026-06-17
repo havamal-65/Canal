@@ -97,15 +97,10 @@
     // ---- canvas pointer handling ----
     bindCanvas() {
       const cv = this.game.renderer.canvas;
-      const toTile = (e) => {
-        const rect = cv.getBoundingClientRect();
-        const sx = (e.clientX - rect.left) * (cv.width / rect.width);
-        const sy = (e.clientY - rect.top) * (cv.height / rect.height);
-        return { x: Math.floor(sx / T), y: Math.floor(sy / T) };
-      };
+      const pick = (e) => this.game.renderer.pickTile(e.clientX, e.clientY);
 
       cv.addEventListener('mousemove', (e) => {
-        const t = toTile(e);
+        const t = pick(e);
         this.hoverX = t.x; this.hoverY = t.y;
         this.updateInspector();
       });
@@ -114,15 +109,17 @@
         this.painting = false;
       });
       cv.addEventListener('mousedown', (e) => {
-        e.preventDefault();
-        const t = toTile(e);
+        if (e.button !== 0) return; // left button builds; right/middle drive the camera
+        const t = pick(e);
         this.hoverX = t.x; this.hoverY = t.y;
+        if (t.x < 0) return;
         this.onClick(t.x, t.y);
         if (this.isPaintTool()) { this.painting = true; this.paintAccum = PAINT_INTERVAL; }
       });
       window.addEventListener('mouseup', () => { this.painting = false; });
-      cv.addEventListener('contextmenu', (e) => e.preventDefault());
     }
+
+    markTerrain() { const r = this.game.renderer; if (r && r.markTerrainDirty) r.markTerrainDirty(); }
 
     isPaintTool() {
       return this.tool === 'dig' || this.tool === 'fill';
@@ -199,7 +196,7 @@
           changed = true;
         }
       }
-      if (changed) this.game.updateHud();
+      if (changed) { this.markTerrain(); this.game.updateHud(); }
     }
 
     placeLock(x, y) {
@@ -208,6 +205,7 @@
       if (w.struct[i] !== STRUCT.NONE) { Canal.toast('Tile is already occupied.', 'bad'); return; }
       if (!eco.spend(C.COST_LOCK)) { this.warnMoney(); return; }
       this.game.lockMgr.build(x, y);
+      this.markTerrain();
       const L = this.game.lockMgr.lockAt(i);
       Canal.toast(L && L.configured ? 'Lock built — it will lift boats between the two pounds.'
         : 'Lock built. Dig a channel on both sides so it can bridge two pounds.', 'good');
@@ -230,6 +228,7 @@
       if (w.struct[i] !== STRUCT.NONE) { Canal.toast('Tile is already occupied.', 'bad'); return; }
       if (!eco.spend(C.COST_SOURCE)) { this.warnMoney(); return; }
       w.addSource(x, y);
+      this.markTerrain();
       Canal.toast('Water source placed.', 'good');
       this.game.updateHud();
     }
