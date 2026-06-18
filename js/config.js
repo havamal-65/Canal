@@ -27,7 +27,8 @@ Canal.CONFIG = {
   // --- Locks ---
   LOCK_LEVEL_EPS: 0.08, // chamber considered "level" with a pound within this
   LOCK_GATE_TIME: 0.7,  // seconds for a gate to open/close
-  LOCK_LEAK: 0.03,      // m/s of water a closed lock leaks downhill (self-fills pounds)
+  LOCK_FILL_RATE: 2.0,  // m/s the chamber level rises/falls while cycling
+  LOCK_LEAK: 0.03,      // m/s of water a lock leaks downhill (self-fills pounds)
   LOCK_PATH_COST: 6,    // A* penalty for routing through a lock (prefer open water)
 
   // --- Boats ---

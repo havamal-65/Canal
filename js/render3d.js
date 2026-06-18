@@ -201,6 +201,7 @@ class ThreeRenderer {
       source: new THREE.CylinderGeometry(0.28, 0.34, 0.5, 12),
       wall: new THREE.BoxGeometry(0.92, 1.3, 0.92),
       leaf: (() => { const g = new THREE.BoxGeometry(0.9, 1, 0.13); g.translate(0.45, 0, 0); return g; })(),
+      gateUnit: (() => { const g = new THREE.BoxGeometry(1, 1, 0.18); g.translate(0.5, 0, 0); return g; })(),
       chamberV: new THREE.BoxGeometry(0.16, 0.7, 1.0),
       chamberH: new THREE.BoxGeometry(1.0, 0.7, 0.16),
       hull: new THREE.BoxGeometry(0.62, 0.2, 0.34),
@@ -448,36 +449,34 @@ class ThreeRenderer {
   }
 
   _addLock(L) {
-    const w = this.world;
-    const lc = this.cellCenter(L.cell);
-    const lockGroundY = w.ground[L.cell] * HS;
-    const axisV = L.axis === 'V';
-    // chamber side walls along the channel
-    const wall1 = new THREE.Mesh(axisV ? this.G.chamberV : this.G.chamberH, this.M.chamber);
-    const wall2 = new THREE.Mesh(axisV ? this.G.chamberV : this.G.chamberH, this.M.chamber);
-    const off = 0.45;
-    if (axisV) { wall1.position.set(lc.x - off, lockGroundY + 0.35, lc.z); wall2.position.set(lc.x + off, lockGroundY + 0.35, lc.z); }
-    else { wall1.position.set(lc.x, lockGroundY + 0.35, lc.z - off); wall2.position.set(lc.x, lockGroundY + 0.35, lc.z + off); }
-    wall1.castShadow = wall2.castShadow = true;
-    this.structures.add(wall1, wall2);
-    // two gates
-    this._addGate(L, L.hiCell, L.gateHi, axisV, lockGroundY);
-    this._addGate(L, L.loCell, L.gateLo, axisV, lockGroundY);
+    this._addWideGate(L, L.hiCells, L.gateHi);
+    this._addWideGate(L, L.loCells, L.gateLo);
   }
 
-  // A single gate leaf hinged at one chamber wall, swinging open about a vertical
-  // axis as the gate opens (instead of sinking).
-  _addGate(L, neighborCell, openness, axisV, lockGroundY) {
-    const lc = this.cellCenter(L.cell), nc = this.cellCenter(neighborCell);
-    const cx = (lc.x + nc.x) / 2, cz = (lc.z + nc.z) / 2;
-    const hiSurf = this.world.surfaceI(L.hiCell);
-    const h = Math.max(0.5, (hiSurf - this.world.ground[L.cell] + 0.4) * HS);
-    const swing = openness * 1.3; // radians
-    const m = new THREE.Mesh(this.G.leaf, this.M.gate);
+  // A gate spanning the full channel width, hinged at one bank and swinging open.
+  _addWideGate(L, sideCells, openness) {
+    const cols = this.cols, w = this.world, cells = L.cells;
+    let dx = 0, dz = 0; // direction from chamber to this pound (one cell)
+    for (let k = 0; k < cells.length; k++) {
+      if (sideCells[k] >= 0) { dx = (sideCells[k] % cols) - (cells[k] % cols); dz = ((sideCells[k] / cols) | 0) - ((cells[k] / cols) | 0); break; }
+    }
+    const c0 = cells[0], cN = cells[cells.length - 1];
+    const ax = c0 % cols + 0.5, az = (c0 / cols | 0) + 0.5;
+    const bx = cN % cols + 0.5, bz = (cN / cols | 0) + 0.5;
+    const spanLen = Math.hypot(bx - ax, bz - az);
+    const ux = spanLen > 0 ? (bx - ax) / spanLen : 1, uz = spanLen > 0 ? (bz - az) / spanLen : 0;
+    const width = cells.length;
+    const fcx = (ax + bx) / 2 + dx * 0.5, fcz = (az + bz) / 2 + dz * 0.5; // gate face centre
+    const hingeX = fcx - ux * (width / 2), hingeZ = fcz - uz * (width / 2);
+    const floorY = w.ground[c0] * HS;
+    let hiSurf = w.ground[c0];
+    for (const c of L.hiCells) if (c >= 0) hiSurf = Math.max(hiSurf, w.ground[c] + w.water[c]);
+    const h = Math.max(0.6, (hiSurf - w.ground[c0] + 0.5) * HS);
+    const m = new THREE.Mesh(this.G.gateUnit, this.M.gate);
     m.castShadow = true;
-    m.scale.y = h;
-    if (axisV) { m.position.set(cx - 0.45, lockGroundY + h / 2, cz); m.rotation.y = -swing; }
-    else { m.position.set(cx, lockGroundY + h / 2, cz - 0.45); m.rotation.y = Math.PI / 2 - swing; }
+    m.position.set(hingeX, floorY + h / 2, hingeZ);
+    m.scale.set(width, h, 1);
+    m.rotation.y = Math.atan2(-uz, ux) + openness * 1.2; // align with span, then swing open
     this.structures.add(m);
   }
 

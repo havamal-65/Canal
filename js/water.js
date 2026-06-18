@@ -40,21 +40,8 @@
         } else passD[i] = 0;
       }
     }
-    // Open the valve faces of configured locks.
-    for (const L of w.locks) {
-      if (!L.configured) continue;
-      openFace(w, L.cell, L.hiCell, L.valveHi);
-      openFace(w, L.cell, L.loCell, L.valveLo);
-    }
-  }
-
-  function openFace(w, c, other, open) {
-    if (!open || other < 0) return;
-    const cols = w.cols;
-    if (other === c + 1) w.passR[c] = 1;
-    else if (other === c - 1) w.passR[c - 1] = 1;
-    else if (other === c + cols) w.passD[c] = 1;
-    else if (other === c - cols) w.passD[c - cols] = 1;
+    // Lock cells are solid barriers in the flux sim; the lock manager moves the
+    // chamber water directly.
   }
 
   function step(w) {

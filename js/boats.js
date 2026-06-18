@@ -157,10 +157,13 @@
     }
 
     startCross(b, bridge, oppCell) {
-      const L = bridge.lock;
+      const L = bridge.lock, cols = this.world.cols;
       const curCell = this.world.idx(Math.round(b.x), Math.round(b.y));
-      const entrySide = curCell === L.hiCell ? 'hi' : 'lo';
-      b.cross = { lock: L, entrySide, oppCell, phase: 'request' };
+      const entrySide = L.hiCells.indexOf(curCell) >= 0 ? 'hi' : 'lo';
+      b.cross = {
+        lock: L, entrySide, oppCell, chamber: bridge.chamber,
+        chx: bridge.chamber % cols, chy: (bridge.chamber / cols) | 0, phase: 'request',
+      };
       this.stepCross(b, 0);
     }
 
@@ -178,8 +181,8 @@
           if (lm.isAdmitted(L, b)) { b.idle = false; b.cross.phase = 'enter'; }
           return;
         case 'enter':
-          if (this.glideTo(b, L.x, L.y, dt)) {
-            this.setCell(b, L.cell);
+          if (this.glideTo(b, b.cross.chx, b.cross.chy, dt)) {
+            this.setCell(b, b.cross.chamber);
             lm.notifyRiding(L, b);
             b.cross.phase = 'ride';
           }
