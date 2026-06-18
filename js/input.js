@@ -19,6 +19,7 @@
       this.painting = false;
       this.paintAccum = 0;
       this.routePick = null; // first dock chosen for a route
+      this.lineStart = null; this.lineEnd = null; // line-tool drag endpoints
 
       this.bindToolbar();
       this.bindCanvas();
@@ -33,6 +34,7 @@
         brush: BRUSH_RADIUS[this.brush],
         tool: this.tool,
         valid: this.previewValid(),
+        lineCells: (this.tool === 'line' && this.lineStart) ? this.lineCells(this.lineStart, this.lineEnd || this.lineStart) : null,
       };
     }
 
@@ -64,6 +66,7 @@
     selectTool(tool) {
       this.tool = tool;
       this.routePick = null;
+      this.lineStart = null; this.lineEnd = null;
       document.querySelectorAll('.tool').forEach((b) => {
         b.classList.toggle('active', b.dataset.tool === tool);
       });
@@ -73,6 +76,7 @@
     hintFor(tool) {
       switch (tool) {
         case 'dig': return 'Click & drag to dig a channel. Water seeks its own level.';
+        case 'line': return 'Click & drag to dig a straight, flat-bottomed canal (brush sets width).';
         case 'fill': return 'Click & drag to raise terrain and wall off water.';
         case 'lock': return 'Place a lock where two pounds meet to lift boats between levels.';
         case 'dock': return 'Place a dock beside navigable water to load or unload cargo.';
@@ -91,6 +95,7 @@
       cv.addEventListener('mousemove', (e) => {
         const t = pick(e);
         this.hoverX = t.x; this.hoverY = t.y;
+        if (this.lineStart && t.x >= 0) this.lineEnd = { x: t.x, y: t.y };
         this.updateInspector();
       });
       cv.addEventListener('mouseleave', () => {
@@ -102,10 +107,14 @@
         const t = pick(e);
         this.hoverX = t.x; this.hoverY = t.y;
         if (t.x < 0) return;
+        if (this.tool === 'line') { this.lineStart = { x: t.x, y: t.y }; this.lineEnd = { x: t.x, y: t.y }; return; }
         this.onClick(t.x, t.y);
         if (this.isPaintTool()) { this.painting = true; this.paintAccum = PAINT_INTERVAL; }
       });
-      window.addEventListener('mouseup', () => { this.painting = false; });
+      window.addEventListener('mouseup', () => {
+        this.painting = false;
+        if (this.lineStart) { this.commitLine(); this.lineStart = null; this.lineEnd = null; }
+      });
     }
 
     markTerrain() { const r = this.game.renderer; if (r && r.markTerrainDirty) r.markTerrainDirty(); }
@@ -131,7 +140,7 @@
           this.game.togglePause();
           return;
         }
-        const map = { '1': 'dig', '2': 'fill', '3': 'lock', '4': 'dock', '5': 'source', '6': 'route', '7': 'bulldoze', '8': 'inspect' };
+        const map = { '1': 'dig', '2': 'line', '3': 'fill', '4': 'lock', '5': 'dock', '6': 'source', '7': 'route', '8': 'bulldoze', '9': 'inspect' };
         if (map[e.key]) {
           this.selectTool(map[e.key]);
           document.querySelectorAll('.tool').forEach((b) => b.classList.toggle('active', b.dataset.tool === map[e.key]));
@@ -174,24 +183,7 @@
         if (this.tool === 'dig') {
           if (w.ground[i] <= C.MIN_GROUND) continue;
           w.ground[i] = Math.max(C.MIN_GROUND, w.ground[i] - C.DIG_STEP);
-          // water follows the shovel: if a neighbouring water body sits higher
-          // than the freshly dug floor, let it flow in right away (the sim then
-          // carries it on down the new channel).
-          let maxSurf = -Infinity;
-          for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-            const nx = x + dx, ny = y + dy;
-            if (!w.inBounds(nx, ny)) continue;
-            const ni = w.idx(nx, ny);
-            if (w.struct[ni] === STRUCT.WALL || w.struct[ni] === STRUCT.LOCK) continue;
-            const wet = w.water[ni] > 0.02 || w.ground[ni] < C.SEA_LEVEL || w.struct[ni] === STRUCT.SOURCE;
-            if (wet) maxSurf = Math.max(maxSurf, w.ground[ni] + w.water[ni]);
-          }
-          if (maxSurf > w.ground[i] + 0.02) {
-            // seed only partway, so the (faster) sim visibly flows in the rest
-            // instead of the channel snapping straight to its final level
-            const target = maxSurf - w.ground[i];
-            w.water[i] = Math.max(w.water[i], target * 0.6);
-          }
+          this.seedFromNeighbours(x, y);
           changed = true;
         } else {
           if (w.ground[i] >= C.MAX_ELEV) continue;
@@ -202,6 +194,66 @@
         }
       }
       if (changed) this.markTerrain();
+    }
+
+    // let adjacent water flow into a freshly dug cell (seed partway; the sim
+    // flows in the rest with a visible current)
+    seedFromNeighbours(x, y) {
+      const w = this.world, i = w.idx(x, y);
+      let maxSurf = -Infinity;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = x + dx, ny = y + dy;
+        if (!w.inBounds(nx, ny)) continue;
+        const ni = w.idx(nx, ny);
+        if (w.struct[ni] === STRUCT.WALL || w.struct[ni] === STRUCT.LOCK) continue;
+        const wet = w.water[ni] > 0.02 || w.ground[ni] < C.SEA_LEVEL || w.struct[ni] === STRUCT.SOURCE;
+        if (wet) maxSurf = Math.max(maxSurf, w.ground[ni] + w.water[ni]);
+      }
+      if (maxSurf > w.ground[i] + 0.02) w.water[i] = Math.max(w.water[i], (maxSurf - w.ground[i]) * 0.6);
+    }
+
+    // cells along a straight line (Bresenham) widened by the brush radius
+    lineCells(a, b) {
+      const cells = [], seen = new Set(), r = BRUSH_RADIUS[this.brush];
+      let x0 = a.x, y0 = a.y; const x1 = b.x, y1 = b.y;
+      const dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0);
+      const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+      let err = dx - dy, guard = 0;
+      for (;;) {
+        for (let oy = -r; oy <= r; oy++) for (let ox = -r; ox <= r; ox++) {
+          const cx = x0 + ox, cy = y0 + oy;
+          if (!this.world.inBounds(cx, cy)) continue;
+          const key = cy * this.world.cols + cx;
+          if (seen.has(key)) continue;
+          seen.add(key); cells.push({ x: cx, y: cy });
+        }
+        if ((x0 === x1 && y0 === y1) || ++guard > 4000) break;
+        const e2 = 2 * err;
+        if (e2 > -dy) { err -= dy; x0 += sx; }
+        if (e2 < dx) { err += dx; y0 += sy; }
+      }
+      return cells;
+    }
+
+    // dig a straight flat-bottomed canal from lineStart to lineEnd
+    commitLine() {
+      if (!this.lineStart || !this.lineEnd) return;
+      const w = this.world;
+      const cells = this.lineCells(this.lineStart, this.lineEnd)
+        .filter(({ x, y }) => w.struct[w.idx(x, y)] === STRUCT.NONE);
+      if (!cells.length) return;
+      let minG = Infinity;
+      for (const { x, y } of cells) minG = Math.min(minG, w.ground[w.idx(x, y)]);
+      const target = Math.max(C.MIN_GROUND, minG - C.DIG_STEP * 4);
+      let changed = false;
+      for (const { x, y } of cells) {
+        const i = w.idx(x, y);
+        if (w.ground[i] <= target) continue;
+        w.ground[i] = target;
+        this.seedFromNeighbours(x, y);
+        changed = true;
+      }
+      if (changed) { this.markTerrain(); Canal.toast('Channel dug.', 'good'); }
     }
 
     placeLock(x, y) {

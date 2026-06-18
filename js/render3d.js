@@ -252,47 +252,56 @@ class ThreeRenderer {
     return geo;
   }
 
-  _buildTerrain() {
-    const cols = this.cols, rows = this.rows, vw = cols + 1;
-    const geo = this._gridGeometry();
-    const pos = geo.attributes.position.array, col = geo.attributes.color.array;
+  // Blocky terrain: each cell is a flat-topped square with vertical walls down
+  // to lower neighbours, so dug channels have crisp, square edges.
+  _terrainGeometry() {
+    const w = this.world, cols = this.cols, rows = this.rows;
+    const BASE = -3;
+    const pos = [], col = [], nrm = [];
     const rgb = [0, 0, 0];
-    for (let j = 0; j <= rows; j++) {
-      for (let i = 0; i <= cols; i++) {
-        const g = this.vertexGround(i, j);
-        const k = (j * vw + i) * 3;
-        pos[k] = i; pos[k + 1] = g * HS; pos[k + 2] = j;
+    const tri = (a, b, c, cc, n) => {
+      pos.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
+      col.push(cc[0], cc[1], cc[2], cc[0], cc[1], cc[2], cc[0], cc[1], cc[2]);
+      nrm.push(n[0], n[1], n[2], n[0], n[1], n[2], n[0], n[1], n[2]);
+    };
+    const quad = (p0, p1, p2, p3, cc, n) => { tri(p0, p1, p2, cc, n); tri(p0, p2, p3, cc, n); };
+    const ng = (x, y) => (x < 0 || y < 0 || x >= cols || y >= rows) ? BASE : w.ground[y * cols + x] * HS;
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const g = w.ground[y * cols + x], h = g * HS;
         terrainColor(g, rgb);
-        col[k] = rgb[0]; col[k + 1] = rgb[1]; col[k + 2] = rgb[2];
+        const c = [rgb[0], rgb[1], rgb[2]];
+        const wc = [c[0] * 0.7, c[1] * 0.72, c[2] * 0.7]; // darker exposed walls
+        // flat top
+        quad([x, h, y], [x, h, y + 1], [x + 1, h, y + 1], [x + 1, h, y], c, [0, 1, 0]);
+        // vertical walls down to any lower neighbour (or map edge)
+        let hn = ng(x + 1, y); if (hn < h - 0.001) quad([x + 1, h, y], [x + 1, h, y + 1], [x + 1, hn, y + 1], [x + 1, hn, y], wc, [1, 0, 0]);
+        hn = ng(x - 1, y); if (hn < h - 0.001) quad([x, h, y + 1], [x, h, y], [x, hn, y], [x, hn, y + 1], wc, [-1, 0, 0]);
+        hn = ng(x, y + 1); if (hn < h - 0.001) quad([x, h, y + 1], [x + 1, h, y + 1], [x + 1, hn, y + 1], [x, hn, y + 1], wc, [0, 0, 1]);
+        hn = ng(x, y - 1); if (hn < h - 0.001) quad([x + 1, h, y], [x, h, y], [x, hn, y], [x + 1, hn, y], wc, [0, 0, -1]);
       }
     }
-    geo.computeVertexNormals();
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
     geo.computeBoundingSphere();
-    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.96, metalness: 0.0 });
-    this.terrainMesh = new THREE.Mesh(geo, mat);
+    return geo;
+  }
+
+  _buildTerrain() {
+    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.96, metalness: 0.0, side: THREE.DoubleSide });
+    this.terrainMesh = new THREE.Mesh(this._terrainGeometry(), mat);
     this.terrainMesh.castShadow = true;
     this.terrainMesh.receiveShadow = true;
     this.scene.add(this.terrainMesh);
   }
 
-  // call when terrain heights change (dig/fill)
+  // rebuild when terrain heights change (dig/fill)
   refreshTerrain() {
-    const cols = this.cols, rows = this.rows, vw = cols + 1;
-    const geo = this.terrainMesh.geometry;
-    const pos = geo.attributes.position.array, col = geo.attributes.color.array;
-    const rgb = [0, 0, 0];
-    for (let j = 0; j <= rows; j++) {
-      for (let i = 0; i <= cols; i++) {
-        const g = this.vertexGround(i, j);
-        const k = (j * vw + i) * 3;
-        pos[k + 1] = g * HS;
-        terrainColor(g, rgb);
-        col[k] = rgb[0]; col[k + 1] = rgb[1]; col[k + 2] = rgb[2];
-      }
-    }
-    geo.attributes.position.needsUpdate = true;
-    geo.attributes.color.needsUpdate = true;
-    geo.computeVertexNormals();
+    const old = this.terrainMesh.geometry;
+    this.terrainMesh.geometry = this._terrainGeometry();
+    old.dispose();
   }
 
   // ---------- water ----------
@@ -493,18 +502,18 @@ class ThreeRenderer {
 
   rebuildHighlight(view) {
     this.highlightGroup.clear();
-    if (!view || view.hoverX < 0) return;
-    const r = view.brush;
+    if (!view) return;
     const mat = view.valid ? this.M.hlOk : this.M.hlBad;
-    for (let dy = -r; dy <= r; dy++) {
-      for (let dx = -r; dx <= r; dx++) {
-        const x = view.hoverX + dx, y = view.hoverY + dy;
-        if (x < 0 || y < 0 || x >= this.cols || y >= this.rows) continue;
-        const m = new THREE.Mesh(this.G.highlight, mat);
-        m.position.set(x + 0.5, this.cellTopY(x, y) + 0.12, y + 0.5);
-        this.highlightGroup.add(m);
-      }
-    }
+    const add = (x, y) => {
+      if (x < 0 || y < 0 || x >= this.cols || y >= this.rows) return;
+      const m = new THREE.Mesh(this.G.highlight, mat);
+      m.position.set(x + 0.5, this.cellTopY(x, y) + 0.12, y + 0.5);
+      this.highlightGroup.add(m);
+    };
+    if (view.lineCells) { for (const c of view.lineCells) add(c.x, c.y); return; }
+    if (view.hoverX < 0) return;
+    const r = view.brush;
+    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) add(view.hoverX + dx, view.hoverY + dy);
   }
 
   // ---------- camera ----------
