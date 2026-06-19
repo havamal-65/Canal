@@ -171,8 +171,8 @@ class ThreeRenderer {
     this.renderer.toneMappingExposure = 1.05;
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x0e2238);
-    this.scene.fog = new THREE.Fog(0x0e2238, 100, 220);
+    this.scene.background = new THREE.Color(0xbcd2ea);
+    this.scene.fog = new THREE.Fog(0xc4d6ec, 120, 280);
 
     this.camera = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
 
@@ -191,6 +191,8 @@ class ThreeRenderer {
     sun.shadow.normalBias = 0.5;
     this.scene.add(sun, sun.target);
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.1));
+    this.sunDir = sun.position.clone().normalize();
+    this._buildSky();
 
     this.raycaster = new THREE.Raycaster();
 
@@ -209,6 +211,34 @@ class ThreeRenderer {
     this._bindCameraControls();
     this.resize();
     window.addEventListener('resize', () => this.resize());
+  }
+
+  // procedural gradient sky dome (also what the water reflects)
+  _buildSky() {
+    const mat = new THREE.ShaderMaterial({
+      side: THREE.BackSide, depthWrite: false, fog: false,
+      uniforms: { uSunDir: { value: this.sunDir } },
+      vertexShader: 'varying vec3 vDir; void main(){ vDir = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: `
+        precision highp float;
+        varying vec3 vDir; uniform vec3 uSunDir;
+        vec3 skyColor(vec3 d, vec3 sun){
+          float t = clamp(d.y * 0.5 + 0.5, 0.0, 1.0);
+          vec3 col = mix(vec3(0.82, 0.88, 0.97), vec3(0.20, 0.45, 0.80), smoothstep(0.0, 0.6, t));
+          float sd = max(dot(normalize(d), normalize(sun)), 0.0);
+          col += vec3(1.0, 0.92, 0.74) * pow(sd, 220.0) * 1.4;
+          col += vec3(1.0, 0.86, 0.62) * pow(sd, 12.0) * 0.18;
+          return col;
+        }
+        void main(){
+          gl_FragColor = vec4(skyColor(normalize(vDir), uSunDir), 1.0);
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+        }`,
+    });
+    this.skyDome = new THREE.Mesh(new THREE.SphereGeometry(450, 32, 16), mat);
+    this.skyDome.frustumCulled = false;
+    this.scene.add(this.skyDome);
   }
 
   // ---------- geometry / material cache ----------
@@ -336,7 +366,7 @@ class ThreeRenderer {
     this.waterGeo.setAttribute('aWet', new THREE.BufferAttribute(new Float32Array(nv), 1));
     this.waterGeo.computeBoundingSphere();
 
-    const sun = new THREE.Vector3(this.cols * 0.35, 70, this.rows * 0.15).normalize();
+    const sun = this.sunDir;
     this.waterMat = new THREE.ShaderMaterial({
       transparent: true, side: THREE.DoubleSide, depthWrite: true,
       uniforms: { uTime: { value: 0 }, uSunDir: { value: sun } },
@@ -356,6 +386,14 @@ class ThreeRenderer {
         precision highp float;
         uniform float uTime; uniform vec3 uSunDir;
         varying vec3 vTint; varying vec2 vFlow; varying float vFoam; varying float vWet; varying vec3 vWorld;
+        vec3 skyColor(vec3 d, vec3 sun){
+          float t = clamp(d.y * 0.5 + 0.5, 0.0, 1.0);
+          vec3 col = mix(vec3(0.82, 0.88, 0.97), vec3(0.20, 0.45, 0.80), smoothstep(0.0, 0.6, t));
+          float sd = max(dot(normalize(d), normalize(sun)), 0.0);
+          col += vec3(1.0, 0.92, 0.74) * pow(sd, 220.0) * 1.4;
+          col += vec3(1.0, 0.86, 0.62) * pow(sd, 12.0) * 0.18;
+          return col;
+        }
         void main() {
           float sp = length(vFlow);
           vec2 dir = sp > 0.0015 ? vFlow / sp : vec2(0.7071, 0.7071);
@@ -372,12 +410,12 @@ class ThreeRenderer {
           vec3 L = normalize(uSunDir);
           float diff = clamp(dot(N, L), 0.0, 1.0);
           vec3 Hh = normalize(L + V);
-          float spec = pow(clamp(dot(N, Hh), 0.0, 1.0), 90.0);
+          float spec = pow(clamp(dot(N, Hh), 0.0, 1.0), 180.0);
           float fres = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 4.0);
-          vec3 sky = vec3(0.45, 0.62, 0.88);
-          vec3 col = vTint * (0.5 + 0.6 * diff);
-          col = mix(col, sky, fres * 0.45);
-          col += spec * vec3(1.0) * 0.9;
+          vec3 refl = skyColor(reflect(-V, N), L);   // reflect the procedural sky
+          vec3 col = vTint * (0.45 + 0.55 * diff);
+          col = mix(col, refl, clamp(fres * 0.65 + 0.06, 0.0, 1.0));
+          col += vec3(1.0, 0.96, 0.86) * spec * 1.3; // tight sun glint
           float crest = smoothstep(0.35, 0.85, h * 0.5 + 0.5);
           float foam = clamp(vFoam, 0.0, 1.0) * crest;
           col = mix(col, vec3(0.92, 0.96, 1.0), foam * 0.65);
@@ -631,6 +669,7 @@ class ThreeRenderer {
     this.rebuildHighlight(view);
     this.emitParticles(dt, boatMgr);
     this.spray.update(dt);
+    this.skyDome.position.copy(this.camera.position);
     this.renderer.render(this.scene, this.camera);
   }
 
