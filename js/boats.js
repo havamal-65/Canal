@@ -37,7 +37,7 @@
         const startDock = stops[k % stops.length];
         const spawn = navWaterNeighbor(this.world, startDock, draft) || { x: startDock.x, y: startDock.y };
         const boat = {
-          route, draft, cargo: false, phase: 'travel',
+          route, draft, cargo: false, phase: 'travel', tint: Math.random(),
           stopIndex: (k + 1) % stops.length, // head toward the next stop
           x: spawn.x, y: spawn.y, cell: this.world.idx(spawn.x, spawn.y),
           path: null, pi: 1, goalX: -1, goalY: -1, repath: true, retry: 0, pathAge: 0,

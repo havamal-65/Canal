@@ -48,6 +48,23 @@ function makeSprite() {
   return t;
 }
 
+// A narrowboat hull: a pointed top-view outline extruded downward.
+function makeHull() {
+  const s = new THREE.Shape();
+  s.moveTo(0.46, 0);
+  s.lineTo(0.30, 0.15);
+  s.lineTo(-0.36, 0.15);
+  s.lineTo(-0.46, 0.06);
+  s.lineTo(-0.46, -0.06);
+  s.lineTo(-0.36, -0.15);
+  s.lineTo(0.30, -0.15);
+  s.lineTo(0.46, 0);
+  const g = new THREE.ExtrudeGeometry(s, { depth: 0.22, bevelEnabled: false });
+  g.rotateX(Math.PI / 2); // outline flat in XZ, hull extends downward
+  g.computeVertexNormals();
+  return g;
+}
+
 // Additive-blended point particles: spray (kind 0, gravity) and foam (kind 1,
 // drifts on the surface). A ring buffer recycles the oldest particles.
 class Spray {
@@ -204,10 +221,10 @@ class ThreeRenderer {
       gateUnit: (() => { const g = new THREE.BoxGeometry(1, 1, 0.18); g.translate(0.5, 0, 0); return g; })(),
       chamberV: new THREE.BoxGeometry(0.16, 0.7, 1.0),
       chamberH: new THREE.BoxGeometry(1.0, 0.7, 0.16),
-      hull: new THREE.BoxGeometry(0.62, 0.2, 0.34),
-      cabin: new THREE.BoxGeometry(0.22, 0.16, 0.24),
-      cargo: new THREE.BoxGeometry(0.26, 0.2, 0.26),
-      prow: new THREE.ConeGeometry(0.17, 0.3, 4),
+      hull: makeHull(),
+      cabin: new THREE.BoxGeometry(0.34, 0.17, 0.26),
+      roof: new THREE.BoxGeometry(0.36, 0.04, 0.28),
+      cargo: new THREE.BoxGeometry(0.24, 0.18, 0.24),
       highlight: new THREE.BoxGeometry(1.0, 0.12, 1.0),
     };
     this.M = {
@@ -453,7 +470,8 @@ class ThreeRenderer {
     this._addWideGate(L, L.loCells, L.gateLo);
   }
 
-  // A gate spanning the full channel width, hinged at one bank and swinging open.
+  // Mitre gates: two leaves hinged at the two banks, meeting in the middle when
+  // closed and swinging apart as the gate opens, spanning the full channel.
   _addWideGate(L, sideCells, openness) {
     const cols = this.cols, w = this.world, cells = L.cells;
     let dx = 0, dz = 0; // direction from chamber to this pound (one cell)
@@ -465,19 +483,23 @@ class ThreeRenderer {
     const bx = cN % cols + 0.5, bz = (cN / cols | 0) + 0.5;
     const spanLen = Math.hypot(bx - ax, bz - az);
     const ux = spanLen > 0 ? (bx - ax) / spanLen : 1, uz = spanLen > 0 ? (bz - az) / spanLen : 0;
-    const width = cells.length;
+    const width = cells.length, half = width / 2;
     const fcx = (ax + bx) / 2 + dx * 0.5, fcz = (az + bz) / 2 + dz * 0.5; // gate face centre
-    const hingeX = fcx - ux * (width / 2), hingeZ = fcz - uz * (width / 2);
     const floorY = w.ground[c0] * HS;
     let hiSurf = w.ground[c0];
     for (const c of L.hiCells) if (c >= 0) hiSurf = Math.max(hiSurf, w.ground[c] + w.water[c]);
     const h = Math.max(0.6, (hiSurf - w.ground[c0] + 0.5) * HS);
-    const m = new THREE.Mesh(this.G.gateUnit, this.M.gate);
-    m.castShadow = true;
-    m.position.set(hingeX, floorY + h / 2, hingeZ);
-    m.scale.set(width, h, 1);
-    m.rotation.y = Math.atan2(-uz, ux) + openness * 1.2; // align with span, then swing open
-    this.structures.add(m);
+    const base = Math.atan2(-uz, ux), swing = openness * 1.15;
+    const leaf = (hx, hz, ang) => {
+      const m = new THREE.Mesh(this.G.gateUnit, this.M.gate);
+      m.castShadow = true;
+      m.position.set(hx, floorY + h / 2, hz);
+      m.scale.set(half, h, 1);
+      m.rotation.y = ang;
+      this.structures.add(m);
+    };
+    leaf(fcx - ux * half, fcz - uz * half, base + swing);            // hinged at one bank
+    leaf(fcx + ux * half, fcz + uz * half, base + Math.PI - swing);  // hinged at the other
   }
 
   rebuildBoats(boatMgr) {
@@ -485,15 +507,19 @@ class ThreeRenderer {
     for (const b of boatMgr.boats) {
       const cx = Math.max(0, Math.min(this.cols - 1, Math.round(b.x)));
       const cy = Math.max(0, Math.min(this.rows - 1, Math.round(b.y)));
-      const y = this.cellTopY(cx, cy) + 0.04;
+      const y = this.cellTopY(cx, cy);
+      // per-boat hull colour (recreated only when its idle state flips)
+      if (!b._hullMat || b._hullIdle !== b.idle) {
+        const col = b.idle ? new THREE.Color(0x8a4a4a) : new THREE.Color().setHSL(b.tint || 0.1, 0.55, 0.42);
+        b._hullMat = new THREE.MeshStandardMaterial({ color: col, roughness: 0.55 });
+        b._hullIdle = b.idle;
+      }
       const g = new THREE.Group();
-      const hull = new THREE.Mesh(this.G.hull, b.idle ? this.M.hullIdle : this.M.hull);
-      hull.castShadow = true; g.add(hull);
-      const prow = new THREE.Mesh(this.G.prow, b.idle ? this.M.hullIdle : this.M.hull);
-      prow.rotation.z = -Math.PI / 2; prow.position.set(0.36, 0, 0); prow.castShadow = true; g.add(prow);
-      if (b.cargo) { const c = new THREE.Mesh(this.G.cargo, this.M.cargo); c.position.y = 0.16; c.castShadow = true; g.add(c); }
-      else { const cab = new THREE.Mesh(this.G.cabin, this.M.cabin); cab.position.set(-0.12, 0.13, 0); cab.castShadow = true; g.add(cab); }
-      g.position.set(b.x + 0.5, y, b.y + 0.5);
+      const hull = new THREE.Mesh(this.G.hull, b._hullMat); hull.castShadow = true; g.add(hull);
+      const cabin = new THREE.Mesh(this.G.cabin, this.M.cabin); cabin.position.set(-0.06, 0.12, 0); cabin.castShadow = true; g.add(cabin);
+      const roof = new THREE.Mesh(this.G.roof, this.M.dockPost); roof.position.set(-0.06, 0.22, 0); g.add(roof);
+      if (b.cargo) { const c = new THREE.Mesh(this.G.cargo, this.M.cargo); c.position.set(0.2, 0.12, 0); c.castShadow = true; g.add(c); }
+      g.position.set(b.x + 0.5, y + 0.02, b.y + 0.5);
       g.rotation.y = -b.heading;
       this.boatsGroup.add(g);
     }
@@ -593,7 +619,10 @@ class ThreeRenderer {
   // ---------- per-frame ----------
   draw(boatMgr, view, dt) {
     this.time += dt;
-    if (this._terrainDirty) { this.refreshTerrain(); this._terrainDirty = false; }
+    // rebuild the (blocky) terrain mesh at most ~12x/s so big dig edits stay smooth
+    if (this._terrainDirty && this.time - (this._lastTerrain || 0) > 0.08) {
+      this.refreshTerrain(); this._terrainDirty = false; this._lastTerrain = this.time;
+    }
     this.stepRipple(dt, boatMgr);
     this.updateWater();
     this.waterMat.uniforms.uTime.value = this.time;
