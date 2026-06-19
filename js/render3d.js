@@ -169,6 +169,7 @@ class ThreeRenderer {
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
+    this.sceneTarget = new THREE.WebGLRenderTarget(2, 2); // scene-without-water, for refraction
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0xbcd2ea);
@@ -339,6 +340,23 @@ class ThreeRenderer {
 
   _buildTerrain() {
     const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.96, metalness: 0.0, side: THREE.DoubleSide });
+    // procedural detail: grassy speckle on flat tops, striated dirt on dug walls
+    mat.onBeforeCompile = (shader) => {
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\n varying vec3 vWPos; varying vec3 vWN;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\n vWPos = (modelMatrix * vec4(transformed, 1.0)).xyz; vWN = normalize(mat3(modelMatrix) * normal);');
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\n varying vec3 vWPos; varying vec3 vWN;\n' +
+          'float h21(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\n' +
+          'float n2(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f); return mix(mix(h21(i), h21(i+vec2(1.,0.)), f.x), mix(h21(i+vec2(0.,1.)), h21(i+vec2(1.,1.)), f.x), f.y); }')
+        .replace('#include <color_fragment>', '#include <color_fragment>\n' +
+          'float up = clamp(vWN.y, 0.0, 1.0);\n' +
+          'float g = n2(vWPos.xz * 2.3) * 0.6 + n2(vWPos.xz * 9.0) * 0.25;\n' +
+          'float ws = n2(vec2((vWPos.x + vWPos.z) * 2.0, vWPos.y * 6.0));\n' +
+          'vec3 grass = vec3(0.84 + g*0.2, 0.97 + g*0.08, 0.70 + g*0.16);\n' +
+          'vec3 dirt = vec3(1.04 + ws*0.12, 0.82 + ws*0.12, 0.64 + ws*0.10);\n' +
+          'diffuseColor.rgb *= mix(dirt, grass, smoothstep(0.35, 0.8, up));');
+    };
     this.terrainMesh = new THREE.Mesh(this._terrainGeometry(), mat);
     this.terrainMesh.castShadow = true;
     this.terrainMesh.receiveShadow = true;
@@ -364,28 +382,33 @@ class ThreeRenderer {
     this.waterGeo.setAttribute('aFlow', new THREE.BufferAttribute(new Float32Array(nv * 2), 2));
     this.waterGeo.setAttribute('aFoam', new THREE.BufferAttribute(new Float32Array(nv), 1));
     this.waterGeo.setAttribute('aWet', new THREE.BufferAttribute(new Float32Array(nv), 1));
+    this.waterGeo.setAttribute('aDepth', new THREE.BufferAttribute(new Float32Array(nv), 1));
     this.waterGeo.computeBoundingSphere();
 
     const sun = this.sunDir;
     this.waterMat = new THREE.ShaderMaterial({
       transparent: true, side: THREE.DoubleSide, depthWrite: true,
-      uniforms: { uTime: { value: 0 }, uSunDir: { value: sun } },
+      uniforms: {
+        uTime: { value: 0 }, uSunDir: { value: sun },
+        uScene: { value: this.sceneTarget.texture }, uResolution: { value: new THREE.Vector2(2, 2) },
+      },
       vertexShader: `
         attribute vec3 color;
         attribute vec2 aFlow;
         attribute float aFoam;
         attribute float aWet;
-        varying vec3 vTint; varying vec2 vFlow; varying float vFoam; varying float vWet; varying vec3 vWorld;
+        attribute float aDepth;
+        varying vec3 vTint; varying vec2 vFlow; varying float vFoam; varying float vWet; varying float vDepth; varying vec3 vWorld;
         void main() {
-          vTint = color; vFlow = aFlow; vFoam = aFoam; vWet = aWet;
+          vTint = color; vFlow = aFlow; vFoam = aFoam; vWet = aWet; vDepth = aDepth;
           vec4 wp = modelMatrix * vec4(position, 1.0);
           vWorld = wp.xyz;
           gl_Position = projectionMatrix * viewMatrix * wp;
         }`,
       fragmentShader: `
         precision highp float;
-        uniform float uTime; uniform vec3 uSunDir;
-        varying vec3 vTint; varying vec2 vFlow; varying float vFoam; varying float vWet; varying vec3 vWorld;
+        uniform float uTime; uniform vec3 uSunDir; uniform sampler2D uScene; uniform vec2 uResolution;
+        varying vec3 vTint; varying vec2 vFlow; varying float vFoam; varying float vWet; varying float vDepth; varying vec3 vWorld;
         vec3 skyColor(vec3 d, vec3 sun){
           float t = clamp(d.y * 0.5 + 0.5, 0.0, 1.0);
           vec3 col = mix(vec3(0.82, 0.88, 0.97), vec3(0.20, 0.45, 0.80), smoothstep(0.0, 0.6, t));
@@ -412,15 +435,19 @@ class ThreeRenderer {
           vec3 Hh = normalize(L + V);
           float spec = pow(clamp(dot(N, Hh), 0.0, 1.0), 180.0);
           float fres = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 4.0);
+          // refraction: sample the scene below, distorted by the wave normal and
+          // tinted toward the water colour with depth (shallow = see the floor)
+          vec2 suv = clamp(gl_FragCoord.xy / uResolution + N.xz * 0.035 * clamp(vDepth, 0.0, 2.0), 0.002, 0.998);
+          vec3 floorCol = texture2D(uScene, suv).rgb;
+          float murk = clamp(vDepth / 2.2, 0.0, 0.92);
+          vec3 body = mix(floorCol, vTint * (0.5 + 0.5 * diff), murk);
           vec3 refl = skyColor(reflect(-V, N), L);   // reflect the procedural sky
-          vec3 col = vTint * (0.45 + 0.55 * diff);
-          col = mix(col, refl, clamp(fres * 0.65 + 0.06, 0.0, 1.0));
+          vec3 col = mix(body, refl, clamp(fres * 0.6 + 0.04, 0.0, 1.0));
           col += vec3(1.0, 0.96, 0.86) * spec * 1.3; // tight sun glint
           float crest = smoothstep(0.35, 0.85, h * 0.5 + 0.5);
           float foam = clamp(vFoam, 0.0, 1.0) * crest;
           col = mix(col, vec3(0.92, 0.96, 1.0), foam * 0.65);
-          float alpha = clamp(0.85 + fres * 0.12 + foam * 0.25, 0.0, 1.0);
-          alpha *= smoothstep(0.05, 0.45, vWet); // soft shoreline; hide dry edges
+          float alpha = smoothstep(0.05, 0.45, vWet); // soft shoreline; interior opaque (floor is in 'body')
           if (alpha < 0.02) discard;
           gl_FragColor = vec4(col, alpha);
           #include <tonemapping_fragment>
@@ -439,6 +466,7 @@ class ThreeRenderer {
     const flow = this.waterGeo.attributes.aFlow.array;
     const foam = this.waterGeo.attributes.aFoam.array;
     const wetA = this.waterGeo.attributes.aWet.array;
+    const depthA = this.waterGeo.attributes.aDepth.array;
     const shallow = [0.22, 0.55, 0.88], deep = [0.06, 0.28, 0.62];
     for (let j = 0; j <= rows; j++) {
       for (let i = 0; i <= cols; i++) {
@@ -465,10 +493,11 @@ class ThreeRenderer {
           col[k + 2] = shallow[2] + (deep[2] - shallow[2]) * dn;
           flow[k2] = fx / surfN; flow[k2 + 1] = fy / surfN;
           foam[k1] = Math.min(1, Math.max(0, ((spd / surfN) - 0.12) * 3.0));
+          depthA[k1] = depth;
         } else {
           pos[k + 1] = gAvg * HS; // dry: sit on terrain (faded out by aWet=0)
           col[k] = deep[0]; col[k + 1] = deep[1]; col[k + 2] = deep[2];
-          flow[k2] = 0; flow[k2 + 1] = 0; foam[k1] = 0;
+          flow[k2] = 0; flow[k2 + 1] = 0; foam[k1] = 0; depthA[k1] = 0;
         }
         wetA[k1] = wetness;
       }
@@ -478,6 +507,7 @@ class ThreeRenderer {
     this.waterGeo.attributes.aFlow.needsUpdate = true;
     this.waterGeo.attributes.aFoam.needsUpdate = true;
     this.waterGeo.attributes.aWet.needsUpdate = true;
+    this.waterGeo.attributes.aDepth.needsUpdate = true;
   }
 
   // ---------- structures, boats, highlight ----------
@@ -637,6 +667,9 @@ class ThreeRenderer {
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    const db = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+    if (this.sceneTarget) this.sceneTarget.setSize(db.x, db.y);
+    if (this.waterMat) this.waterMat.uniforms.uResolution.value.set(db.x, db.y);
   }
 
   // ---------- picking (for build tools) ----------
@@ -670,6 +703,13 @@ class ThreeRenderer {
     this.emitParticles(dt, boatMgr);
     this.spray.update(dt);
     this.skyDome.position.copy(this.camera.position);
+    // pass 1: render the scene without water/spray into the refraction texture
+    this.waterMesh.visible = false; this.spray.points.visible = false;
+    this.renderer.setRenderTarget(this.sceneTarget);
+    this.renderer.render(this.scene, this.camera);
+    this.renderer.setRenderTarget(null);
+    this.waterMesh.visible = true; this.spray.points.visible = true;
+    // pass 2: full scene (water samples the refraction texture)
     this.renderer.render(this.scene, this.camera);
   }
 
