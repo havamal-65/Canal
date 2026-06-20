@@ -200,6 +200,7 @@ class ThreeRenderer {
     this._cacheGeoMat();
     this._buildTerrain();
     this._buildWater();
+    this.buildVegetation();
 
     this.structures = new THREE.Group();
     this.boatsGroup = new THREE.Group();
@@ -302,32 +303,37 @@ class ThreeRenderer {
   }
 
   // Blocky terrain: each cell is a flat-topped square with vertical walls down
-  // to lower neighbours, so dug channels have crisp, square edges.
+  // to lower neighbours. Bakes ambient occlusion (pits darker on top, walls
+  // darker toward the bottom) so the geometry feels grounded.
   _terrainGeometry() {
     const w = this.world, cols = this.cols, rows = this.rows;
     const BASE = -3;
     const pos = [], col = [], nrm = [];
     const rgb = [0, 0, 0];
-    const tri = (a, b, c, cc, n) => {
-      pos.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
-      col.push(cc[0], cc[1], cc[2], cc[0], cc[1], cc[2], cc[0], cc[1], cc[2]);
-      nrm.push(n[0], n[1], n[2], n[0], n[1], n[2], n[0], n[1], n[2]);
-    };
-    const quad = (p0, p1, p2, p3, cc, n) => { tri(p0, p1, p2, cc, n); tri(p0, p2, p3, cc, n); };
+    const pv = (p, c, n) => { pos.push(p[0], p[1], p[2]); col.push(c[0], c[1], c[2]); nrm.push(n[0], n[1], n[2]); };
     const ng = (x, y) => (x < 0 || y < 0 || x >= cols || y >= rows) ? BASE : w.ground[y * cols + x] * HS;
     for (let y = 0; y < rows; y++) {
       for (let x = 0; x < cols; x++) {
         const g = w.ground[y * cols + x], h = g * HS;
         terrainColor(g, rgb);
-        const c = [rgb[0], rgb[1], rgb[2]];
-        const wc = [c[0] * 0.7, c[1] * 0.72, c[2] * 0.7]; // darker exposed walls
+        // top AO: darker the more higher neighbours surround it (pits/corners)
+        let higher = 0;
+        if (ng(x + 1, y) > h + 0.01) higher++; if (ng(x - 1, y) > h + 0.01) higher++;
+        if (ng(x, y + 1) > h + 0.01) higher++; if (ng(x, y - 1) > h + 0.01) higher++;
+        const ao = 1 - 0.12 * higher;
+        const c = [rgb[0] * ao, rgb[1] * ao, rgb[2] * ao];
+        const wt = [rgb[0] * 0.7, rgb[1] * 0.72, rgb[2] * 0.7];   // wall top
+        const wb = [rgb[0] * 0.34, rgb[1] * 0.36, rgb[2] * 0.34]; // wall bottom (crevice AO)
+        const U = [0, 1, 0];
         // flat top
-        quad([x, h, y], [x, h, y + 1], [x + 1, h, y + 1], [x + 1, h, y], c, [0, 1, 0]);
-        // vertical walls down to any lower neighbour (or map edge)
-        let hn = ng(x + 1, y); if (hn < h - 0.001) quad([x + 1, h, y], [x + 1, h, y + 1], [x + 1, hn, y + 1], [x + 1, hn, y], wc, [1, 0, 0]);
-        hn = ng(x - 1, y); if (hn < h - 0.001) quad([x, h, y + 1], [x, h, y], [x, hn, y], [x, hn, y + 1], wc, [-1, 0, 0]);
-        hn = ng(x, y + 1); if (hn < h - 0.001) quad([x, h, y + 1], [x + 1, h, y + 1], [x + 1, hn, y + 1], [x, hn, y + 1], wc, [0, 0, 1]);
-        hn = ng(x, y - 1); if (hn < h - 0.001) quad([x + 1, h, y], [x, h, y], [x, hn, y], [x + 1, hn, y], wc, [0, 0, -1]);
+        pv([x, h, y], c, U); pv([x, h, y + 1], c, U); pv([x + 1, h, y + 1], c, U);
+        pv([x, h, y], c, U); pv([x + 1, h, y + 1], c, U); pv([x + 1, h, y], c, U);
+        // vertical wall (top verts lighter, bottom verts darker)
+        const wall = (t0, t1, b1, b0, n) => { pv(t0, wt, n); pv(t1, wt, n); pv(b1, wb, n); pv(t0, wt, n); pv(b1, wb, n); pv(b0, wb, n); };
+        let hn = ng(x + 1, y); if (hn < h - 0.001) wall([x + 1, h, y], [x + 1, h, y + 1], [x + 1, hn, y + 1], [x + 1, hn, y], [1, 0, 0]);
+        hn = ng(x - 1, y); if (hn < h - 0.001) wall([x, h, y + 1], [x, h, y], [x, hn, y], [x, hn, y + 1], [-1, 0, 0]);
+        hn = ng(x, y + 1); if (hn < h - 0.001) wall([x, h, y + 1], [x + 1, h, y + 1], [x + 1, hn, y + 1], [x, hn, y + 1], [0, 0, 1]);
+        hn = ng(x, y - 1); if (hn < h - 0.001) wall([x + 1, h, y], [x, h, y], [x, hn, y], [x + 1, hn, y], [0, 0, -1]);
       }
     }
     const geo = new THREE.BufferGeometry();
@@ -368,6 +374,70 @@ class ThreeRenderer {
     const old = this.terrainMesh.geometry;
     this.terrainMesh.geometry = this._terrainGeometry();
     old.dispose();
+    this.updateVegetation();
+  }
+
+  // scatter trees on dry high land and reeds on gentle water banks (instanced)
+  buildVegetation() {
+    const w = this.world, cols = this.cols, rows = this.rows;
+    const trees = [], reeds = [];
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const i = y * cols + x;
+        if (w.struct[i] !== STRUCT.NONE || w.water[i] > 0.05) continue;
+        const g = w.ground[i];
+        let gentleBank = false;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
+          const ni = ny * cols + nx;
+          if (w.water[ni] > 0.2 && Math.abs(g - (w.ground[ni] + w.water[ni])) < 1.2) gentleBank = true;
+        }
+        const inst = { x, y, g, sc: 0.6 + Math.random() * 0.7, yaw: Math.random() * 6.28 };
+        if (gentleBank) { if (Math.random() < 0.6) reeds.push(inst); }
+        else if (g > C.SEA_LEVEL + 1 && Math.random() < 0.06) trees.push(inst);
+      }
+    }
+    this._treeData = trees; this._reedData = reeds;
+    if (trees.length) {
+      const trunkGeo = new THREE.CylinderGeometry(0.05, 0.085, 0.6, 5); trunkGeo.translate(0, 0.3, 0);
+      const leafGeo = new THREE.ConeGeometry(0.42, 1.0, 7); leafGeo.translate(0, 0.95, 0);
+      this.trunks = new THREE.InstancedMesh(trunkGeo, new THREE.MeshStandardMaterial({ color: 0x5b3a22, roughness: 0.95 }), trees.length);
+      this.leaves = new THREE.InstancedMesh(leafGeo, new THREE.MeshStandardMaterial({ color: 0x3f6b34, roughness: 0.85 }), trees.length);
+      this.trunks.castShadow = this.leaves.castShadow = true;
+      this.trunks.frustumCulled = this.leaves.frustumCulled = false;
+      this.scene.add(this.trunks, this.leaves);
+    }
+    if (reeds.length) {
+      const reedGeo = new THREE.ConeGeometry(0.08, 0.5, 4); reedGeo.translate(0, 0.25, 0);
+      this.reedsMesh = new THREE.InstancedMesh(reedGeo, new THREE.MeshStandardMaterial({ color: 0x6f8f3c, roughness: 0.9 }), reeds.length);
+      this.reedsMesh.castShadow = true;
+      this.reedsMesh.frustumCulled = false;
+      this.scene.add(this.reedsMesh);
+    }
+    this.updateVegetation();
+  }
+
+  // reposition instances and hide any whose cell got dug/flooded
+  updateVegetation() {
+    if (!this._treeData) return;
+    const w = this.world, cols = this.cols;
+    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3();
+    const place = (data, meshes) => {
+      for (let k = 0; k < data.length; k++) {
+        const t = data[k], i = t.y * cols + t.x;
+        const gone = w.struct[i] !== STRUCT.NONE || w.water[i] > 0.2 || w.ground[i] < t.g - 1.0;
+        const sc = gone ? 0 : t.sc;
+        q.setFromEuler(new THREE.Euler(0, t.yaw, 0));
+        s.set(sc, sc, sc);
+        p.set(t.x + 0.5, w.ground[i] * HS, t.y + 0.5);
+        m.compose(p, q, s);
+        for (const mesh of meshes) mesh.setMatrixAt(k, m);
+      }
+      for (const mesh of meshes) mesh.instanceMatrix.needsUpdate = true;
+    };
+    if (this.trunks) place(this._treeData, [this.trunks, this.leaves]);
+    if (this.reedsMesh) place(this._reedData, [this.reedsMesh]);
   }
 
   // ---------- water ----------
