@@ -25,7 +25,7 @@
       this.economy = new Canal.Economy();
       this.lockMgr = new Canal.LockManager(this.world);
       this.boatMgr = new Canal.BoatManager(this.world, this.economy, this.lockMgr);
-      Canal.buildScenario(this); // boot into the two-lake / two-lock demo loop
+      // Large generated landscape (hills, a river to the sea) — dig canals into it.
       this.renderer = new Canal.Renderer(document.getElementById('game'), this.world);
       this.input = new Canal.Input(this);
 
@@ -43,10 +43,9 @@
     }
 
     welcome() {
-      Canal.toast('Canal demo: a high lake and a low lake, joined by two locks.', 'good');
-      setTimeout(() => Canal.toast('Three boats loop the circuit — up the left lock, across the top, down the right lock.', 'info'), 2800);
-      setTimeout(() => Canal.toast('Watch the lock chambers fill and empty as each boat passes through.', 'info'), 5600);
-      this.setHint('Three boats are running a loop through both locks. Use the tools to build your own canals too.');
+      Canal.toast('A river runs from the highlands down to the sea. Dig canals from it.', 'good');
+      setTimeout(() => Canal.toast('Dig channels and locks to carry boats across the terrain between docks.', 'info'), 2800);
+      this.setHint('Dig from the river or sea, build locks to change level, then link docks with routes.');
     }
 
     setSpeed(s) {

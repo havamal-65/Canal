@@ -74,7 +74,9 @@
           const riverX = 0.18 + 0.5 * ny + 0.12 * Math.sin(ny * Math.PI * 2.3 + this.seed);
           const valley = Math.max(0, 1 - Math.abs(nx - riverX) * 7.0);
           h -= valley * 7.5;
-          this.ground[i] = Math.max(C.MIN_GROUND, Math.min(C.MAX_ELEV, h));
+          // quantise to 1 m terraces so blocky terrain stays clean (no stair-step
+          // noise) and the wall count stays bounded on large maps
+          this.ground[i] = Math.round(Math.max(C.MIN_GROUND, Math.min(C.MAX_ELEV, h)));
         }
       }
 

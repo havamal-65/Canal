@@ -4,8 +4,8 @@ window.Canal = window.Canal || {};
 
 Canal.CONFIG = {
   // --- Grid ---
-  COLS: 64,
-  ROWS: 40,
+  COLS: 128,
+  ROWS: 96,
   TILE: 16,
 
   // --- Elevation model (metres) ---

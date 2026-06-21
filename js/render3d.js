@@ -161,6 +161,7 @@ class ThreeRenderer {
     this.world = world;
     this.cols = world.cols;
     this.rows = world.rows;
+    this.CHUNK = 32; // terrain chunk size (build/cull/rebuild per chunk)
     this.time = 0;
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -305,15 +306,15 @@ class ThreeRenderer {
   // Blocky terrain: each cell is a flat-topped square with vertical walls down
   // to lower neighbours. Bakes ambient occlusion (pits darker on top, walls
   // darker toward the bottom) so the geometry feels grounded.
-  _terrainGeometry() {
+  _terrainGeometry(x0, y0, x1, y1) {
     const w = this.world, cols = this.cols, rows = this.rows;
     const BASE = -3;
     const pos = [], col = [], nrm = [];
     const rgb = [0, 0, 0];
     const pv = (p, c, n) => { pos.push(p[0], p[1], p[2]); col.push(c[0], c[1], c[2]); nrm.push(n[0], n[1], n[2]); };
     const ng = (x, y) => (x < 0 || y < 0 || x >= cols || y >= rows) ? BASE : w.ground[y * cols + x] * HS;
-    for (let y = 0; y < rows; y++) {
-      for (let x = 0; x < cols; x++) {
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
         const g = w.ground[y * cols + x], h = g * HS;
         terrainColor(g, rgb);
         // top AO: darker the more higher neighbours surround it (pits/corners)
@@ -346,6 +347,7 @@ class ThreeRenderer {
 
   _buildTerrain() {
     const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.96, metalness: 0.0, side: THREE.DoubleSide });
+    this.terrainMat = mat;
     // procedural detail: grassy speckle on flat tops, striated dirt on dug walls
     mat.onBeforeCompile = (shader) => {
       shader.vertexShader = shader.vertexShader
@@ -363,17 +365,48 @@ class ThreeRenderer {
           'vec3 dirt = vec3(1.04 + ws*0.12, 0.82 + ws*0.12, 0.64 + ws*0.10);\n' +
           'diffuseColor.rgb *= mix(dirt, grass, smoothstep(0.35, 0.8, up));');
     };
-    this.terrainMesh = new THREE.Mesh(this._terrainGeometry(), mat);
-    this.terrainMesh.castShadow = true;
-    this.terrainMesh.receiveShadow = true;
-    this.scene.add(this.terrainMesh);
+    // Build one mesh per CHUNK x CHUNK block so only edited chunks rebuild and
+    // off-screen chunks are frustum-culled (scales to large maps).
+    this.terrainGroup = new THREE.Group();
+    this.chunkMeshes = new Map();
+    this._dirtyChunks = new Set();
+    const CH = this.CHUNK;
+    for (let cy = 0; cy < this.rows; cy += CH) {
+      for (let cx = 0; cx < this.cols; cx += CH) {
+        const x1 = Math.min(cx + CH, this.cols), y1 = Math.min(cy + CH, this.rows);
+        const m = new THREE.Mesh(this._terrainGeometry(cx, cy, x1, y1), mat);
+        m.castShadow = true; m.receiveShadow = true;
+        this.terrainGroup.add(m);
+        this.chunkMeshes.set(cx + ',' + cy, { mesh: m, x0: cx, y0: cy, x1, y1 });
+      }
+    }
+    this.scene.add(this.terrainGroup);
   }
 
-  // rebuild when terrain heights change (dig/fill)
+  // mark chunks overlapping a cell region dirty (no args = all chunks)
+  markTerrainDirty(x0, y0, x1, y1) {
+    if (!this._dirtyChunks) this._dirtyChunks = new Set();
+    const CH = this.CHUNK;
+    if (x0 === undefined) { for (const k of this.chunkMeshes.keys()) this._dirtyChunks.add(k); return; }
+    for (let cy = Math.floor(y0 / CH) * CH; cy <= y1; cy += CH) {
+      for (let cx = Math.floor(x0 / CH) * CH; cx <= x1; cx += CH) {
+        const k = cx + ',' + cy;
+        if (this.chunkMeshes.has(k)) this._dirtyChunks.add(k);
+      }
+    }
+  }
+
+  // rebuild only the dirty terrain chunks
   refreshTerrain() {
-    const old = this.terrainMesh.geometry;
-    this.terrainMesh.geometry = this._terrainGeometry();
-    old.dispose();
+    if (!this._dirtyChunks || !this._dirtyChunks.size) return;
+    for (const k of this._dirtyChunks) {
+      const c = this.chunkMeshes.get(k);
+      if (!c) continue;
+      const old = c.mesh.geometry;
+      c.mesh.geometry = this._terrainGeometry(c.x0, c.y0, c.x1, c.y1);
+      old.dispose();
+    }
+    this._dirtyChunks.clear();
     this.updateVegetation();
   }
 
@@ -585,20 +618,17 @@ class ThreeRenderer {
   cellTopY(cx, cy) { const w = this.world; const i = cy * this.cols + cx; return (w.ground[i] + Math.max(0, w.water[i])) * HS; }
 
   rebuildStructures() {
-    const w = this.world, cols = this.cols, rows = this.rows;
+    const w = this.world;
     this.structures.clear();
-    for (let y = 0; y < rows; y++) {
-      for (let x = 0; x < cols; x++) {
-        const i = y * cols + x;
-        const s = w.struct[i];
-        if (s === STRUCT.NONE || s === STRUCT.LOCK) continue;
-        const gx = x + 0.5, gz = y + 0.5, gy = w.ground[i] * HS;
-        let m = null;
-        if (s === STRUCT.DOCK) { m = new THREE.Mesh(this.G.dock, this.M.dock); m.position.set(gx, gy + 0.17, gz); }
-        else if (s === STRUCT.SOURCE) { m = new THREE.Mesh(this.G.source, this.M.source); m.position.set(gx, gy + 0.25, gz); }
-        else if (s === STRUCT.WALL) { m = new THREE.Mesh(this.G.wall, this.M.wall); m.position.set(gx, gy + 0.65, gz); }
-        if (m) { m.castShadow = true; m.receiveShadow = true; this.structures.add(m); }
-      }
+    for (const d of w.docks) {
+      const m = new THREE.Mesh(this.G.dock, this.M.dock);
+      m.position.set(d.x + 0.5, w.ground[w.idx(d.x, d.y)] * HS + 0.17, d.y + 0.5);
+      m.castShadow = m.receiveShadow = true; this.structures.add(m);
+    }
+    for (const s of w.sources) {
+      const m = new THREE.Mesh(this.G.source, this.M.source);
+      m.position.set(s.x + 0.5, w.ground[w.idx(s.x, s.y)] * HS + 0.25, s.y + 0.5);
+      m.castShadow = true; this.structures.add(m);
     }
     for (const L of w.locks) if (L.configured) this._addLock(L);
   }
@@ -750,7 +780,7 @@ class ThreeRenderer {
       -((clientY - rect.top) / rect.height) * 2 + 1,
     );
     this.raycaster.setFromCamera(ndc, this.camera);
-    const hit = this.raycaster.intersectObject(this.terrainMesh, false)[0];
+    const hit = this.raycaster.intersectObjects(this.terrainGroup.children, false)[0];
     if (!hit) return { x: -1, y: -1 };
     const gx = Math.floor(hit.point.x), gy = Math.floor(hit.point.z);
     if (gx < 0 || gy < 0 || gx >= this.cols || gy >= this.rows) return { x: -1, y: -1 };
@@ -760,9 +790,9 @@ class ThreeRenderer {
   // ---------- per-frame ----------
   draw(boatMgr, view, dt) {
     this.time += dt;
-    // rebuild the (blocky) terrain mesh at most ~12x/s so big dig edits stay smooth
-    if (this._terrainDirty && this.time - (this._lastTerrain || 0) > 0.08) {
-      this.refreshTerrain(); this._terrainDirty = false; this._lastTerrain = this.time;
+    // rebuild dirty terrain chunks at most ~12x/s so big dig edits stay smooth
+    if (this._dirtyChunks && this._dirtyChunks.size && this.time - (this._lastTerrain || 0) > 0.08) {
+      this.refreshTerrain(); this._lastTerrain = this.time;
     }
     this.stepRipple(dt, boatMgr);
     this.updateWater();

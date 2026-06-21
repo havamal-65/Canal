@@ -117,7 +117,7 @@
       });
     }
 
-    markTerrain() { const r = this.game.renderer; if (r && r.markTerrainDirty) r.markTerrainDirty(); }
+    markTerrain(x0, y0, x1, y1) { const r = this.game.renderer; if (r && r.markTerrainDirty) r.markTerrainDirty(x0, y0, x1, y1); }
 
     isPaintTool() {
       return this.tool === 'dig' || this.tool === 'fill';
@@ -193,7 +193,7 @@
           changed = true;
         }
       }
-      if (changed) this.markTerrain();
+      if (changed) { const r = BRUSH_RADIUS[this.brush]; this.markTerrain(this.hoverX - r, this.hoverY - r, this.hoverX + r, this.hoverY + r); }
     }
 
     // let adjacent water flow into a freshly dug cell (seed partway; the sim
@@ -253,7 +253,12 @@
         this.seedFromNeighbours(x, y);
         changed = true;
       }
-      if (changed) { this.markTerrain(); Canal.toast('Channel dug.', 'good'); }
+      if (changed) {
+        const r = BRUSH_RADIUS[this.brush];
+        this.markTerrain(Math.min(this.lineStart.x, this.lineEnd.x) - r, Math.min(this.lineStart.y, this.lineEnd.y) - r,
+          Math.max(this.lineStart.x, this.lineEnd.x) + r, Math.max(this.lineStart.y, this.lineEnd.y) + r);
+        Canal.toast('Channel dug.', 'good');
+      }
     }
 
     placeLock(x, y) {
