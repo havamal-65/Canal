@@ -162,6 +162,7 @@ class ThreeRenderer {
     this.cols = world.cols;
     this.rows = world.rows;
     this.CHUNK = 32; // terrain chunk size (build/cull/rebuild per chunk)
+    this.buildMode = false; // true when a build tool is active (touch: 1 finger builds)
     this.time = 0;
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -758,6 +759,42 @@ class ThreeRenderer {
       this.radius = Math.max(6, Math.min(180, this.radius * (1 + Math.sign(e.deltaY) * 0.1)));
       this._applyCamera();
     }, { passive: false });
+
+    // --- touch: one finger orbits in look mode; two fingers pinch-zoom / pan / twist ---
+    let mode = null, pDist = 0, pAng = 0, pcx = 0, pcy = 0;
+    const dist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+    const ang = (a, b) => Math.atan2(b.clientY - a.clientY, b.clientX - a.clientX);
+    const mid = (a, b) => ({ x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 });
+    el.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 2) {
+        mode = 'cam'; const m = mid(e.touches[0], e.touches[1]);
+        pDist = dist(e.touches[0], e.touches[1]); pAng = ang(e.touches[0], e.touches[1]); pcx = m.x; pcy = m.y;
+        e.preventDefault();
+      } else if (e.touches.length === 1 && !this.buildMode) {
+        mode = 'orbit'; lx = e.touches[0].clientX; ly = e.touches[0].clientY;
+      } else { mode = null; }
+    }, { passive: false });
+    el.addEventListener('touchmove', (e) => {
+      if (mode === 'cam' && e.touches.length === 2) {
+        const a = e.touches[0], b = e.touches[1], m = mid(a, b), nd = dist(a, b), na = ang(a, b);
+        if (nd > 0) this.radius = Math.max(6, Math.min(180, this.radius * (pDist / nd)));
+        this.theta -= (na - pAng);
+        const s = this.radius * 0.0016;
+        const fwd = new THREE.Vector3(Math.sin(this.theta), 0, Math.cos(this.theta));
+        const right = new THREE.Vector3(Math.cos(this.theta), 0, -Math.sin(this.theta));
+        this.target.addScaledVector(right, -(m.x - pcx) * s).addScaledVector(fwd, -(m.y - pcy) * s);
+        pDist = nd; pAng = na; pcx = m.x; pcy = m.y;
+        this._applyCamera(); e.preventDefault();
+      } else if (mode === 'orbit' && e.touches.length === 1) {
+        const dx = e.touches[0].clientX - lx, dy = e.touches[0].clientY - ly; lx = e.touches[0].clientX; ly = e.touches[0].clientY;
+        this.theta -= dx * 0.006; this.phi = Math.max(0.15, Math.min(1.45, this.phi - dy * 0.006));
+        this._applyCamera(); e.preventDefault();
+      }
+    }, { passive: false });
+    el.addEventListener('touchend', (e) => {
+      if (e.touches.length === 0) mode = null;
+      else if (e.touches.length === 1) { mode = this.buildMode ? null : 'orbit'; lx = e.touches[0].clientX; ly = e.touches[0].clientY; }
+    });
   }
 
   resize() {

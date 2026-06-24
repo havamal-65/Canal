@@ -67,6 +67,7 @@
       this.tool = tool;
       this.routePick = null;
       this.lineStart = null; this.lineEnd = null;
+      if (this.game.renderer) this.game.renderer.buildMode = (tool !== 'inspect');
       document.querySelectorAll('.tool').forEach((b) => {
         b.classList.toggle('active', b.dataset.tool === tool);
       });
@@ -114,6 +115,44 @@
       window.addEventListener('mouseup', () => {
         this.painting = false;
         if (this.lineStart) { this.commitLine(); this.lineStart = null; this.lineEnd = null; }
+      });
+
+      // --- touch building: one finger builds with the active tool; two fingers
+      // are reserved for the camera. Inspect = tap to read a tile. ---
+      let tapX = 0, tapY = 0, tapT = null, moved = false;
+      cv.addEventListener('touchstart', (e) => {
+        if (e.touches.length !== 1) { this.painting = false; return; }
+        const tt = e.touches[0], t = pick(tt);
+        this.hoverX = t.x; this.hoverY = t.y;
+        tapX = tt.clientX; tapY = tt.clientY; tapT = t; moved = false;
+        if (this.tool === 'inspect') return; // tap handled on touchend; camera orbits the drag
+        if (t.x < 0) return;
+        e.preventDefault();
+        if (this.tool === 'line') { this.lineStart = { x: t.x, y: t.y }; this.lineEnd = { x: t.x, y: t.y }; return; }
+        this.onClick(t.x, t.y);
+        if (this.isPaintTool()) { this.painting = true; this.paintAccum = PAINT_INTERVAL; }
+      }, { passive: false });
+      cv.addEventListener('touchmove', (e) => {
+        if (e.touches.length !== 1) { this.painting = false; return; }
+        const tt = e.touches[0];
+        if (Math.hypot(tt.clientX - tapX, tt.clientY - tapY) > 10) moved = true;
+        if (this.tool === 'inspect') return;
+        const t = pick(tt);
+        this.hoverX = t.x; this.hoverY = t.y;
+        if (this.lineStart && t.x >= 0) this.lineEnd = { x: t.x, y: t.y };
+        e.preventDefault();
+      }, { passive: false });
+      cv.addEventListener('touchend', () => {
+        this.painting = false;
+        if (this.lineStart) { this.commitLine(); this.lineStart = null; this.lineEnd = null; }
+        if (this.tool === 'inspect' && tapT && !moved && tapT.x >= 0) {
+          this.hoverX = tapT.x; this.hoverY = tapT.y; this.updateInspector();
+          const w = this.world, i = w.idx(tapT.x, tapT.y);
+          const names = ['open', 'lock', 'dock', 'water source', 'wall'];
+          Canal.toast('(' + tapT.x + ',' + tapT.y + ') · ground ' + w.ground[i].toFixed(0) + 'm · water ' + w.water[i].toFixed(1) + 'm · ' + names[w.struct[i]], 'info');
+        }
+        this.hoverX = -1; this.hoverY = -1; // no hover highlight on touch
+        tapT = null;
       });
     }
 
